@@ -1,0 +1,943 @@
+<main
+  class="frame"
+  (pointerdown)="onPointerDown($event)"
+  (pointermove)="onPointerMove($event)"
+  (pointerup)="onPointerUp($event)"
+  (pointercancel)="cancelPointer($event)"
+  (lostpointercapture)="cancelPointer($event)"
+  (contextmenu)="preventContextMenu($event)"
+>
+  @for (slide of renderedSlides(); track slide.item.id) {
+    <section
+      class="stage"
+      [class.stage--stable]="slide.phase === 'stable'"
+      [class.stage--outgoing]="slide.phase === 'outgoing'"
+      [class.stage--incoming]="slide.phase === 'incoming'"
+      [style.--fade-ms]="(crossfade()?.durationMs ?? settings().fadeDurationMs) + 'ms'"
+    >
+      @let item = slide.item;
+      @if (item.kind === 'photo') {
+        <img
+          class="media media--photo"
+          [class.media--cover]="slide.fitMode === 'cover'"
+          [class.media--zoomed]="photoIsZoomed(item.id)"
+          [style.transform]="photoTransformStyle(item.id)"
+          [src]="item.url"
+          [alt]="item.caption || 'Fotografía de Naiskos'"
+          draggable="false"
+        />
+      } @else {
+        <video
+          #videoElement
+          class="media media--video"
+          [class.media--cover]="slide.fitMode === 'cover'"
+          [attr.data-media-id]="item.id"
+          [src]="item.url"
+          [poster]="item.posterUrl || ''"
+          autoplay
+          playsinline
+          preload="auto"
+          (loadedmetadata)="onVideoLoaded(videoElement, item.id)"
+          (playing)="onVideoPlaying(videoElement, item.id)"
+          (pause)="onVideoPause(videoElement, item.id)"
+          (timeupdate)="onVideoProgress(videoElement, item.id)"
+          (ended)="onVideoEnded(item.id)"
+        ></video>
+
+        @if (slide.phase === 'stable') {
+          <div class="video-controls" (pointerdown)="$event.stopPropagation()">
+            <label class="video-seek">
+              <output>{{ formatVideoTime(videoCurrentTime()) }}</output>
+              <input
+                type="range"
+                min="0"
+                [max]="videoDuration() || 0"
+                step="0.1"
+                [value]="videoCurrentTime()"
+                (input)="seekVideo($event)"
+                aria-label="Posición del video"
+              />
+              <output>{{ formatVideoTime(videoDuration()) }}</output>
+            </label>
+            <div class="video-actions">
+              <button type="button" (click)="toggleVideoPlayback($event)">
+                {{ videoPaused() ? 'Reproducir' : 'Pausar' }}
+              </button>
+              <button type="button" (click)="toggleMute($event)">
+                {{ settings().muted ? 'Activar audio' : 'Silenciar' }}
+              </button>
+              <label class="video-volume">
+                <span>Volumen</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  [value]="settings().volume"
+                  (input)="setVolume($event)"
+                />
+              </label>
+            </div>
+          </div>
+        }
+      }
+
+      @if ((settings().showCaption && item.caption) || (settings().showSender && item.senderName)) {
+        <aside class="metadata">
+          @if (settings().showCaption && item.caption) {
+            <p class="metadata__caption">{{ item.caption }}</p>
+          }
+          <p class="metadata__details">
+            @if (settings().showSender && item.senderName) {
+              <span>{{ item.senderName }}</span>
+            }
+          </p>
+        </aside>
+      }
+    </section>
+  } @empty {
+    @if (provisioning()?.state === 'pending') {
+      <section class="provisioning-state">
+        <div class="provisioning-state__copy">
+          <span class="eyebrow">Primer inicio</span>
+          <h1>Registrando este Naiskos</h1>
+          <p>
+            El equipo se está identificando automáticamente con el servicio central. No requiere
+            aprobación ni intervención manual.
+          </p>
+          <strong>{{ provisioning()?.suggestedName }}</strong>
+          <small>{{ provisioning()?.deviceModel }}</small>
+          @if (provisioning()?.lastError) {
+            <span class="provisioning-state__warning"
+              >Sin conexión con la central; volveremos a intentar.</span
+            >
+          }
+        </div>
+        <div class="empty-state__mark" aria-hidden="true">N</div>
+      </section>
+    } @else if (provisioning()?.state === 'rejected' || provisioning()?.state === 'expired') {
+      <section class="empty-state">
+        <div class="empty-state__mark">N</div>
+        <h1>Alta no completada</h1>
+        <p>
+          {{
+            provisioning()?.state === 'expired'
+              ? 'La solicitud venció.'
+              : 'La solicitud fue rechazada.'
+          }}
+        </p>
+        <button
+          class="button button--primary"
+          type="button"
+          [disabled]="provisioningResetPending()"
+          (click)="resetProvisioning()"
+        >
+          {{ provisioningResetPending() ? 'Generando…' : 'Generar nueva solicitud' }}
+        </button>
+      </section>
+    } @else if (loading()) {
+      <section class="empty-state">
+        <div class="empty-state__mark">N</div>
+        <h1>Naiskos</h1>
+        <p>Preparando el marco…</p>
+      </section>
+    } @else {
+      <section class="empty-state">
+        <div class="empty-state__mark">N</div>
+        <h1>Naiskos</h1>
+        <p>Aún no hay fotografías o videos sincronizados.</p>
+        <small>Desliza hacia abajo para abrir la configuración.</small>
+      </section>
+    }
+  }
+
+  @if (currentMedia()) {
+    <span class="navigation-hint navigation-hint--left" aria-hidden="true">‹</span>
+    <span class="navigation-hint navigation-hint--right" aria-hidden="true">›</span>
+  }
+
+  <div class="preload" aria-hidden="true">
+    @for (url of preloadUrls(); track url) {
+      <img [src]="url" alt="" />
+    }
+  </div>
+
+  @if (connectionWarning()) {
+    <div class="status-pill" role="status">{{ connectionWarning() }}</div>
+  }
+
+  @if (settings().showClock || settings().showDate || settings().showWeather) {
+    <aside class="corner-widgets" aria-label="Hora, fecha y clima">
+      @if (settings().showClock) {
+        <strong>{{ displayTime() }}</strong>
+      }
+      <div class="corner-widgets__details">
+        @if (settings().showDate) {
+          <span>{{ displayDate() }}</span>
+        }
+        @if (settings().showWeather) {
+          <span [title]="weatherDescription()">
+            {{ weatherIcon() }} {{ displayTemperature() }}
+          </span>
+        }
+      </div>
+    </aside>
+  }
+
+  @if (activeView() === 'menu') {
+    <section class="overlay-backdrop" (pointerdown)="$event.stopPropagation()">
+      <div class="quick-menu" role="dialog" aria-modal="true" aria-label="Menú de Naiskos">
+        <header class="overlay-header">
+          <div>
+            <span class="eyebrow">Naiskos</span>
+            <h2>Menú principal</h2>
+            <p>{{ manifest()?.frameId || 'Marco local' }} · Agente conectado</p>
+          </div>
+          <button class="icon-button" type="button" (click)="closeOverlay()" aria-label="Cerrar">
+            ×
+          </button>
+        </header>
+
+        <div class="quick-menu__grid">
+          <button class="menu-card menu-card--primary" type="button" (click)="openGallery()">
+            <span class="menu-card__icon">▦</span>
+            <strong>Todas las fotos y videos</strong>
+            <small>{{ media().length }} medios disponibles</small>
+          </button>
+          <button class="menu-card" type="button" (click)="openSettings()">
+            <span class="menu-card__icon">⚙</span>
+            <strong>Configuración</strong>
+            <small>Presentación, clima, audio y equipo</small>
+          </button>
+          <button class="menu-card" type="button" (click)="openNotifications()">
+            <span class="menu-card__icon">●</span>
+            <strong>Notificaciones</strong>
+            <small>Sin avisos pendientes</small>
+          </button>
+        </div>
+
+        <div class="quick-menu__equipment">
+          <span>Equipo</span>
+          <button class="button button--ghost" type="button" (click)="openSystemAction('exit')">
+            Salir de Naiskos
+          </button>
+          <button
+            class="button button--danger"
+            type="button"
+            (click)="openSystemAction('poweroff')"
+          >
+            Apagar equipo
+          </button>
+        </div>
+      </div>
+    </section>
+  }
+
+  @if (activeView() === 'gallery') {
+    <section class="workspace-overlay" (pointerdown)="$event.stopPropagation()">
+      <header class="workspace-header">
+        <button class="back-button" type="button" (click)="openMainMenu()">‹ Menú</button>
+        <div>
+          <span class="eyebrow">Galería</span>
+          <h2>Todas las fotos y videos</h2>
+        </div>
+        <button class="icon-button" type="button" (click)="closeOverlay()" aria-label="Cerrar">
+          ×
+        </button>
+      </header>
+
+      <div class="gallery-toolbar">
+        <div class="segmented-control" aria-label="Filtrar galería">
+          <button
+            type="button"
+            [class.is-active]="galleryFilter() === 'all'"
+            (click)="galleryFilter.set('all')"
+          >
+            Todos
+          </button>
+          <button
+            type="button"
+            [class.is-active]="galleryFilter() === 'photo'"
+            (click)="galleryFilter.set('photo')"
+          >
+            Fotos
+          </button>
+          <button
+            type="button"
+            [class.is-active]="galleryFilter() === 'video'"
+            (click)="galleryFilter.set('video')"
+          >
+            Videos
+          </button>
+        </div>
+        <label>
+          <span>Orden</span>
+          <select [value]="galleryOrder()" (change)="galleryOrder.set($any($event.target).value)">
+            <option value="newest">Más recientes</option>
+            <option value="oldest">Más antiguos</option>
+          </select>
+        </label>
+        <output>{{ galleryItems().length }} resultados</output>
+      </div>
+
+      <div
+        class="gallery-grid"
+        [class.gallery-grid--dragging]="galleryDragging()"
+        (pointerdown)="onGalleryPointerDown($event)"
+        (pointermove)="onGalleryPointerMove($event)"
+        (pointerup)="onGalleryPointerUp($event)"
+        (pointercancel)="onGalleryPointerCancel($event)"
+        (pointerleave)="onGalleryPointerCancel($event)"
+      >
+        @for (item of galleryItems(); track item.id) {
+          <article class="gallery-card">
+            <button
+              class="gallery-card__open"
+              type="button"
+              (click)="showGalleryItem(item.id, $event)"
+            >
+              <span class="gallery-card__preview">
+                @if (item.kind === 'photo' || item.posterUrl) {
+                  <img
+                    [src]="item.kind === 'photo' ? item.url : item.posterUrl!"
+                    [alt]="item.caption || (item.kind === 'photo' ? 'Fotografía' : 'Video')"
+                    loading="lazy"
+                    decoding="async"
+                    draggable="false"
+                  />
+                } @else {
+                  <span class="gallery-card__empty">Video</span>
+                }
+                @if (item.kind === 'video') {
+                  <span class="gallery-card__video"
+                    >▶ {{ formatVideoTime(item.durationSeconds || 0) }}</span
+                  >
+                }
+              </span>
+              <span class="gallery-card__caption">
+                <strong>{{
+                  item.caption || (item.kind === 'photo' ? 'Fotografía' : 'Video')
+                }}</strong>
+                <small
+                  >{{ item.kind === 'photo' ? 'Foto' : 'Video' }} ·
+                  {{ formatBytes(item.sizeBytes) }}</small
+                >
+              </span>
+            </button>
+            <button
+              class="gallery-card__options"
+              type="button"
+              (pointerdown)="$event.stopPropagation()"
+              (click)="openGalleryOptions(item, $event)"
+              [attr.aria-label]="
+                'Opciones de ' + (item.caption || (item.kind === 'photo' ? 'fotografía' : 'video'))
+              "
+            >
+              ⋮
+            </button>
+          </article>
+        } @empty {
+          <div class="gallery-empty">No hay medios para este filtro.</div>
+        }
+      </div>
+
+      @if (galleryOptionsItem(); as item) {
+        <section
+          class="gallery-options-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="gallery-options-title"
+          (pointerdown)="$event.stopPropagation()"
+        >
+          <div class="gallery-options-dialog">
+            <span class="eyebrow">Opciones del medio</span>
+            <h2 id="gallery-options-title">
+              {{ item.caption || (item.kind === 'photo' ? 'Fotografía' : 'Video') }}
+            </h2>
+            @if (galleryDeleteConfirming()) {
+              <p>
+                ¿Eliminar este {{ item.kind === 'photo' ? 'elemento fotográfico' : 'video' }}
+                únicamente de este marco? Los demás marcos no cambiarán.
+              </p>
+              <div class="gallery-danger-confirmation">
+                <button
+                  class="button button--ghost"
+                  type="button"
+                  [disabled]="galleryOptionsSaving()"
+                  (click)="cancelGalleryDelete()"
+                >
+                  Cancelar
+                </button>
+                <button
+                  class="button button--danger"
+                  type="button"
+                  [disabled]="galleryOptionsSaving()"
+                  (click)="confirmGalleryDelete()"
+                >
+                  {{ galleryOptionsSaving() ? 'Solicitando…' : 'Sí, eliminar' }}
+                </button>
+              </div>
+            } @else {
+              <p>El encuadre es inmediato; rotar y eliminar se confirman mediante la central.</p>
+
+              <section class="gallery-option-section">
+                <h3>Encuadre</h3>
+                <div class="gallery-fit-options">
+                  <button
+                    type="button"
+                    [class.is-selected]="item.fitMode === 'inherit'"
+                    [attr.aria-pressed]="item.fitMode === 'inherit'"
+                    [disabled]="galleryOptionsSaving()"
+                    (click)="setGalleryFitMode('inherit')"
+                  >
+                    <strong>Heredar del marco</strong>
+                    <small>Ahora: {{ fitLabel(settings().defaultFitMode) }}</small>
+                  </button>
+                  <button
+                    type="button"
+                    [class.is-selected]="item.fitMode === 'contain'"
+                    [attr.aria-pressed]="item.fitMode === 'contain'"
+                    [disabled]="galleryOptionsSaving()"
+                    (click)="setGalleryFitMode('contain')"
+                  >
+                    <strong>Imagen completa</strong>
+                    <small>Muestra todo el contenido y admite bandas.</small>
+                  </button>
+                  <button
+                    type="button"
+                    [class.is-selected]="item.fitMode === 'cover'"
+                    [attr.aria-pressed]="item.fitMode === 'cover'"
+                    [disabled]="galleryOptionsSaving()"
+                    (click)="setGalleryFitMode('cover')"
+                  >
+                    <strong>Rellenar pantalla</strong>
+                    <small>Cubre el marco y puede recortar los bordes.</small>
+                  </button>
+                </div>
+              </section>
+
+              <section class="gallery-option-section">
+                <h3>Orientación · {{ item.rotationDegrees }}°</h3>
+                <div class="gallery-operation-grid">
+                  <button
+                    type="button"
+                    [disabled]="galleryOptionsSaving() || galleryOperation()?.mediaId === item.id"
+                    (click)="rotateGalleryItem('left')"
+                  >
+                    ↶ Izquierda
+                  </button>
+                  <button
+                    type="button"
+                    [disabled]="galleryOptionsSaving() || galleryOperation()?.mediaId === item.id"
+                    (click)="rotateGalleryItem('right')"
+                  >
+                    Derecha ↷
+                  </button>
+                  <button
+                    type="button"
+                    [disabled]="
+                      galleryOptionsSaving() ||
+                      galleryOperation()?.mediaId === item.id ||
+                      item.rotationDegrees === 0
+                    "
+                    (click)="rotateGalleryItem('reset')"
+                  >
+                    Restablecer
+                  </button>
+                </div>
+              </section>
+
+              <section class="gallery-option-section gallery-option-section--danger">
+                <button
+                  class="gallery-delete-button"
+                  type="button"
+                  [disabled]="galleryOptionsSaving() || galleryOperation()?.mediaId === item.id"
+                  (click)="requestGalleryDelete()"
+                >
+                  Eliminar de este marco
+                </button>
+              </section>
+            }
+
+            @if (galleryOptionsError()) {
+              <p class="confirmation-dialog__error" role="alert">{{ galleryOptionsError() }}</p>
+            }
+            @if (galleryOptionsMessage()) {
+              <p class="gallery-options-dialog__message" role="status">
+                {{ galleryOptionsMessage() }}
+              </p>
+            }
+
+            <div class="gallery-options-dialog__footer">
+              <span>
+                {{
+                  galleryOptionsSaving()
+                    ? 'Procesando solicitud…'
+                    : galleryOperation()?.mediaId === item.id
+                      ? 'Esperando al servicio central…'
+                      : mediaFitLabel(item.fitMode)
+                }}
+              </span>
+              <button
+                class="button button--ghost"
+                type="button"
+                [disabled]="galleryOptionsSaving()"
+                (click)="closeGalleryOptions()"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </section>
+      }
+    </section>
+  }
+
+  @if (settingsOpen()) {
+    <section
+      class="workspace-overlay"
+      (pointerdown)="$event.stopPropagation()"
+      aria-label="Configuración de Naiskos"
+    >
+      <header class="workspace-header">
+        <button class="back-button" type="button" (click)="openMainMenu()">‹ Menú</button>
+        <div>
+          <span class="eyebrow">Naiskos</span>
+          <h2>Configuración</h2>
+        </div>
+        <button class="icon-button" type="button" (click)="closeSettings()" aria-label="Cerrar">
+          ×
+        </button>
+      </header>
+
+      <div class="settings-workspace">
+        <nav class="settings-nav" aria-label="Secciones de configuración">
+          <button
+            type="button"
+            [class.is-active]="settingsSection() === 'presentation'"
+            (click)="settingsSection.set('presentation')"
+          >
+            Presentación
+          </button>
+          <button
+            type="button"
+            [class.is-active]="settingsSection() === 'widgets'"
+            (click)="settingsSection.set('widgets')"
+          >
+            Hora y clima
+          </button>
+          <button
+            type="button"
+            [class.is-active]="settingsSection() === 'playback'"
+            (click)="settingsSection.set('playback')"
+          >
+            Audio y video
+          </button>
+          <button
+            type="button"
+            [class.is-active]="settingsSection() === 'storage'"
+            (click)="settingsSection.set('storage')"
+          >
+            Almacenamiento
+          </button>
+          <button
+            type="button"
+            [class.is-active]="settingsSection() === 'notifications'"
+            (click)="settingsSection.set('notifications')"
+          >
+            Notificaciones
+          </button>
+          <button
+            type="button"
+            [class.is-active]="settingsSection() === 'device'"
+            (click)="settingsSection.set('device')"
+          >
+            Marco y equipo
+          </button>
+        </nav>
+
+        <div class="settings-content">
+          @switch (settingsSection()) {
+            @case ('presentation') {
+              <div class="section-heading">
+                <h3>Presentación</h3>
+                <p>Comportamiento global de fotografías y videos.</p>
+              </div>
+              <div class="settings-grid">
+                <label class="field">
+                  <span>Duración de fotografías y pausa de video</span>
+                  <div class="range-row">
+                    <input
+                      type="range"
+                      min="1"
+                      max="300"
+                      step="1"
+                      [value]="settingsDraft.photoDurationSeconds"
+                      (input)="settingsDraft.photoDurationSeconds = +$any($event.target).value"
+                    />
+                    <output>{{ settingsDraft.photoDurationSeconds }} s</output>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>Orden</span>
+                  <select
+                    [value]="settingsDraft.order"
+                    (change)="settingsDraft.order = $any($event.target).value"
+                  >
+                    <option value="newest">Más reciente primero</option>
+                    <option value="oldest">Más antiguo primero</option>
+                    <option value="shuffle">Aleatorio</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Encuadre predeterminado</span>
+                  <select
+                    [value]="settingsDraft.defaultFitMode"
+                    (change)="settingsDraft.defaultFitMode = $any($event.target).value"
+                  >
+                    <option value="contain">Imagen completa</option>
+                    <option value="cover">Rellenar pantalla</option>
+                  </select>
+                </label>
+                <div class="toggle-list">
+                  <label
+                    ><input
+                      type="checkbox"
+                      [checked]="settingsDraft.showCaption"
+                      (change)="settingsDraft.showCaption = $any($event.target).checked"
+                    />
+                    Mostrar texto</label
+                  >
+                  <label
+                    ><input
+                      type="checkbox"
+                      [checked]="settingsDraft.showSender"
+                      (change)="settingsDraft.showSender = $any($event.target).checked"
+                    />
+                    Mostrar remitente</label
+                  >
+                </div>
+              </div>
+            }
+            @case ('widgets') {
+              <div class="section-heading">
+                <h3>Hora, fecha y clima</h3>
+                <p>
+                  Ubicación automática mediante redes Wi-Fi y clima preparado por el servidor
+                  central.
+                </p>
+              </div>
+              <div class="toggle-list toggle-list--single">
+                <label
+                  ><input
+                    type="checkbox"
+                    [checked]="settingsDraft.showClock"
+                    (change)="settingsDraft.showClock = $any($event.target).checked"
+                  />
+                  Mostrar reloj</label
+                >
+                <label
+                  ><input
+                    type="checkbox"
+                    [checked]="settingsDraft.showDate"
+                    (change)="settingsDraft.showDate = $any($event.target).checked"
+                  />
+                  Mostrar fecha</label
+                >
+                <label
+                  ><input
+                    type="checkbox"
+                    [checked]="settingsDraft.showWeather"
+                    (change)="settingsDraft.showWeather = $any($event.target).checked"
+                  />
+                  Mostrar clima</label
+                >
+                <label
+                  ><input
+                    type="checkbox"
+                    [checked]="settingsDraft.use24Hour"
+                    (change)="settingsDraft.use24Hour = $any($event.target).checked"
+                  />
+                  Formato de 24 horas</label
+                >
+              </div>
+              <div class="settings-grid">
+                <label class="field">
+                  <span>Unidad de temperatura</span>
+                  <select
+                    [value]="settingsDraft.temperatureUnit"
+                    (change)="settingsDraft.temperatureUnit = $any($event.target).value"
+                  >
+                    <option value="c">Celsius</option>
+                    <option value="f">Fahrenheit</option>
+                  </select>
+                </label>
+                <div class="field field--summary">
+                  <span>Ubicación detectada</span>
+                  <strong>{{ weather().location?.label || 'Pendiente de detección' }}</strong>
+                  <small>
+                    @if (weather().status === 'ready') {
+                      {{ weatherDescription() }} · actualización automática
+                    } @else if (weather().status === 'stale') {
+                      Último dato vencido; se conserva localmente
+                    } @else {
+                      El servidor volverá a intentarlo automáticamente
+                    }
+                  </small>
+                  @if (weather().location?.source === 'google_wifi') {
+                    <small translate="no">Ubicación proporcionada por Google Maps</small>
+                  }
+                </div>
+              </div>
+            }
+            @case ('playback') {
+              <div class="section-heading">
+                <h3>Audio y video</h3>
+                <p>Preferencias de reproducción del marco.</p>
+              </div>
+              <label class="field">
+                <span>Volumen</span>
+                <div class="range-row">
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    [value]="settingsDraft.volume"
+                    (input)="settingsDraft.volume = +$any($event.target).value"
+                  />
+                  <output>{{ (settingsDraft.volume * 100).toFixed(0) }} %</output>
+                </div>
+              </label>
+              <div class="toggle-list toggle-list--single">
+                <label
+                  ><input
+                    type="checkbox"
+                    [checked]="settingsDraft.muted"
+                    (change)="settingsDraft.muted = $any($event.target).checked"
+                  />
+                  Iniciar silenciado</label
+                >
+              </div>
+            }
+            @case ('storage') {
+              <div class="section-heading">
+                <h3>Almacenamiento</h3>
+                <p>Resumen calculado a partir del manifiesto local.</p>
+              </div>
+              <div class="storage-grid">
+                <article>
+                  <strong>{{ storageSummary().photoCount }}</strong
+                  ><span>Fotografías</span
+                  ><small>{{ formatBytes(storageSummary().photoBytes) }}</small>
+                </article>
+                <article>
+                  <strong>{{ storageSummary().videoCount }}</strong
+                  ><span>Videos</span><small>{{ formatBytes(storageSummary().videoBytes) }}</small>
+                </article>
+                <article>
+                  <strong>{{ formatBytes(storageSummary().totalBytes) }}</strong
+                  ><span>Total de medios</span><small>En uso por Naiskos</small>
+                </article>
+              </div>
+              <p class="demo-note">
+                La capacidad total y el espacio libre se incorporarán desde las métricas del agente
+                local.
+              </p>
+            }
+            @case ('notifications') {
+              <div class="section-heading">
+                <h3>Notificaciones</h3>
+                <p>Configuración provisional hasta implementar eventos reales.</p>
+              </div>
+              <div class="toggle-list toggle-list--single">
+                <label
+                  ><input
+                    type="checkbox"
+                    [checked]="demoNotifications.enabled"
+                    (change)="demoNotifications.enabled = $any($event.target).checked"
+                  />
+                  Mostrar notificaciones</label
+                >
+                <label
+                  ><input
+                    type="checkbox"
+                    [checked]="demoNotifications.sound"
+                    (change)="demoNotifications.sound = $any($event.target).checked"
+                  />
+                  Reproducir sonido</label
+                >
+              </div>
+              <label class="field">
+                <span>Volumen de notificaciones</span>
+                <div class="range-row">
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    [value]="demoNotifications.volume"
+                    (input)="demoNotifications.volume = +$any($event.target).value"
+                  />
+                  <output>{{ (demoNotifications.volume * 100).toFixed(0) }} %</output>
+                </div>
+              </label>
+            }
+            @case ('device') {
+              <div class="section-heading">
+                <h3>Marco y equipo</h3>
+                <p>Vincula usuarios autorizados e identifica este dispositivo.</p>
+              </div>
+              <div class="device-summary">
+                <span>ID del marco</span>
+                <strong>{{ manifest()?.frameId || 'Sin aprovisionar' }}</strong>
+                <small>El equipo se registra automáticamente en su primer arranque.</small>
+              </div>
+              @if (provisioning()?.state === 'approved' && provisioning()?.pairingCode) {
+                <section class="pairing-card" aria-labelledby="pairing-title">
+                  <div class="pairing-card__copy">
+                    <span class="eyebrow">Telegram</span>
+                    <h3 id="pairing-title">Vincular con este marco</h3>
+                    <ol>
+                      <li>Inicia <strong>@naiskosbot</strong> y solicita autorización.</li>
+                      <li>Cuando te aprueben, escanea este QR o envía el código al bot.</li>
+                    </ol>
+                    <span class="pairing-code">{{ provisioning()?.pairingCode }}</span>
+                    <small
+                      >También puedes enviar: /vincular {{ provisioning()?.pairingCode }}</small
+                    >
+                    @if (pairingRotationError()) {
+                      <p class="pairing-error" role="alert">{{ pairingRotationError() }}</p>
+                    }
+                    <button
+                      class="button button--ghost"
+                      type="button"
+                      [disabled]="pairingRotationPending()"
+                      (click)="rotatePairingCode()"
+                    >
+                      {{ pairingRotationPending() ? 'Cambiando…' : 'Cambiar código' }}
+                    </button>
+                  </div>
+                  <div class="pairing-card__qr">
+                    <img
+                      src="/api/v1/pairing/qr.png"
+                      alt="Código QR para vincularse a este marco"
+                    />
+                    <span>Escanear con el teléfono</span>
+                  </div>
+                </section>
+              } @else {
+                <p class="demo-note">Esperando que el registro automático termine.</p>
+              }
+              <section class="system-actions" aria-labelledby="system-actions-title">
+                <div>
+                  <h3 id="system-actions-title">Equipo</h3>
+                  <p>Salir al escritorio o apagar correctamente la Raspberry Pi.</p>
+                </div>
+                <div class="system-actions__buttons">
+                  <button
+                    class="button button--ghost"
+                    type="button"
+                    (click)="openSystemAction('exit')"
+                  >
+                    Salir de Naiskos
+                  </button>
+                  <button
+                    class="button button--danger"
+                    type="button"
+                    (click)="openSystemAction('poweroff')"
+                  >
+                    Apagar equipo
+                  </button>
+                </div>
+              </section>
+            }
+          }
+        </div>
+      </div>
+
+      <footer class="workspace-footer">
+        <button class="button button--ghost" type="button" (click)="resetSettings()">
+          Restaurar valores
+        </button>
+        <div>
+          <button class="button button--ghost" type="button" (click)="closeSettings()">
+            Cancelar
+          </button>
+          <button class="button button--primary" type="button" (click)="saveSettings()">
+            Guardar
+          </button>
+        </div>
+      </footer>
+    </section>
+  }
+
+  @if (activeView() === 'notifications') {
+    <section class="workspace-overlay" (pointerdown)="$event.stopPropagation()">
+      <header class="workspace-header">
+        <button class="back-button" type="button" (click)="openMainMenu()">‹ Menú</button>
+        <div>
+          <span class="eyebrow">Estado</span>
+          <h2>Notificaciones</h2>
+        </div>
+        <button class="icon-button" type="button" (click)="closeOverlay()" aria-label="Cerrar">
+          ×
+        </button>
+      </header>
+      <div class="notification-empty">
+        <span>✓</span>
+        <h3>Todo está en orden</h3>
+        <p>No hay notificaciones pendientes en esta muestra.</p>
+        <small
+          >Almacenamiento, sincronización, conexión, procesamiento y actualizaciones aparecerán
+          aquí.</small
+        >
+      </div>
+    </section>
+  }
+
+  @if (systemActionPending(); as action) {
+    <section class="confirmation-backdrop" role="dialog" aria-modal="true">
+      <div class="confirmation-dialog">
+        @if (systemActionInProgress()) {
+          <span class="eyebrow">Naiskos</span>
+          <h2>{{ action === 'exit' ? 'Cerrando Naiskos…' : 'Apagando el equipo…' }}</h2>
+          <p>
+            {{
+              action === 'exit'
+                ? 'En unos segundos volverás al escritorio.'
+                : 'Espera a que la pantalla se apague antes de desconectar la alimentación.'
+            }}
+          </p>
+        } @else {
+          <span class="eyebrow">Confirmación</span>
+          <h2>{{ action === 'exit' ? '¿Salir de Naiskos?' : '¿Apagar el equipo?' }}</h2>
+          <p>
+            {{
+              action === 'exit'
+                ? 'Se cerrará el visor y quedará visible el escritorio. Naiskos volverá a iniciarse al reiniciar el equipo.'
+                : 'La Raspberry Pi realizará un apagado seguro. No cortes la alimentación hasta que la pantalla se apague.'
+            }}
+          </p>
+          @if (systemActionError()) {
+            <p class="confirmation-dialog__error" role="alert">{{ systemActionError() }}</p>
+          }
+          <div class="confirmation-dialog__buttons">
+            <button class="button button--ghost" type="button" (click)="cancelSystemAction()">
+              Cancelar
+            </button>
+            <button
+              class="button"
+              [class.button--danger]="action === 'poweroff'"
+              [class.button--primary]="action === 'exit'"
+              type="button"
+              (click)="confirmSystemAction()"
+            >
+              {{ action === 'exit' ? 'Sí, salir' : 'Sí, apagar' }}
+            </button>
+          </div>
+        }
+      </div>
+    </section>
+  }
+</main>

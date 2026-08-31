@@ -202,7 +202,10 @@ export class App implements OnDestroy {
     const total = (items: MediaItem[]) =>
       items.reduce(
         (sum, item) =>
-          sum + this.numericBytes(item.sizeBytes) + this.numericBytes(item.posterSizeBytes),
+          sum +
+          this.numericBytes(item.sizeBytes) +
+          this.numericBytes(item.posterSizeBytes) +
+          this.numericBytes(item.thumbnailSizeBytes),
         0,
       );
     const photoBytes = total(photoItems);
@@ -1042,6 +1045,25 @@ export class App implements OnDestroy {
     const minutes = Math.floor(safeSeconds / 60);
     const remainder = String(safeSeconds % 60).padStart(2, '0');
     return `${minutes}:${remainder}`;
+  }
+
+  protected galleryPreviewUrl(item: MediaItem): string {
+    return item.thumbnailUrl || (item.kind === 'video' ? item.posterUrl || '' : item.url);
+  }
+
+  protected galleryPreviewFallback(item: MediaItem): string {
+    return item.kind === 'video' ? item.posterUrl || '' : item.url;
+  }
+
+  protected onGalleryPreviewError(event: Event): void {
+    const image = event.currentTarget as HTMLImageElement;
+    const fallback = image.dataset['fallbackSrc'];
+    if (fallback && image.dataset['fallbackApplied'] !== 'true') {
+      image.dataset['fallbackApplied'] = 'true';
+      image.src = fallback;
+      return;
+    }
+    image.hidden = true;
   }
 
   protected resetProvisioning(): void {

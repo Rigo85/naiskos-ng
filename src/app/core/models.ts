@@ -68,6 +68,7 @@ export interface MediaItem {
   kind: 'photo' | 'video';
   url: string;
   posterUrl: string | null;
+  thumbnailUrl?: string | null;
   caption: string | null;
   senderName: string | null;
   receivedAt: string;
@@ -77,6 +78,7 @@ export interface MediaItem {
   sha256: string;
   sizeBytes: number;
   posterSizeBytes: number | null;
+  thumbnailSizeBytes?: number | null;
 }
 
 export interface FrameManifest {

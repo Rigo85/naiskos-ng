@@ -660,6 +660,8 @@ select {
 
 .gallery-card {
   position: relative;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 220px;
   min-width: 0;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.09);

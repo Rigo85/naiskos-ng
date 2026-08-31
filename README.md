@@ -19,7 +19,8 @@ Telegram y no usa el almacenamiento del navegador como repositorio de medios.
   imagen ampliada.
 - Controles permanentes de reproducción, posición, volumen y mute para videos.
 - Reloj, fecha y clima opcionales.
-- Galería táctil con arrastre, métricas de almacenamiento, rotación y
+- Galería táctil con arrastre, miniaturas dedicadas con fallback, pintura
+  diferida fuera de pantalla, métricas de almacenamiento, rotación y
   eliminación.
 - Configuración local, estado de alta, QR de vinculación, campana con contador,
   centro de notificaciones, salida del kiosco y apagado del equipo.

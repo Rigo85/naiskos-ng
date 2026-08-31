@@ -325,13 +325,15 @@
               (click)="showGalleryItem(item.id, $event)"
             >
               <span class="gallery-card__preview">
-                @if (item.kind === 'photo' || item.posterUrl) {
+                @if (item.kind === 'photo' || item.posterUrl || item.thumbnailUrl) {
                   <img
-                    [src]="item.kind === 'photo' ? item.url : item.posterUrl!"
+                    [src]="galleryPreviewUrl(item)"
+                    [attr.data-fallback-src]="galleryPreviewFallback(item)"
                     [alt]="item.caption || (item.kind === 'photo' ? 'Fotografía' : 'Video')"
                     loading="lazy"
                     decoding="async"
                     draggable="false"
+                    (error)="onGalleryPreviewError($event)"
                   />
                 } @else {
                   <span class="gallery-card__empty">Video</span>

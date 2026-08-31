@@ -492,6 +492,47 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('usa la miniatura en la galería sin alterar el medio del visor', async () => {
+    vi.useFakeTimers();
+    servedManifest = {
+      ...manifest,
+      media: [
+        {
+          ...photo,
+          thumbnailUrl: '/media/photo-1-thumb.webp',
+          thumbnailSizeBytes: 23,
+        },
+        {
+          ...video,
+          thumbnailUrl: '/media/video-1-thumb.webp',
+          thumbnailSizeBytes: 29,
+        },
+      ],
+    };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const component = fixture.componentInstance as unknown as { openGallery(): void };
+    component.openGallery();
+    fixture.detectChanges();
+    const previews = (fixture.nativeElement as HTMLElement).querySelectorAll(
+      '.gallery-card__preview img',
+    );
+    expect(previews[0]?.getAttribute('src')).toBe('/media/photo-1-thumb.webp');
+    expect(previews[1]?.getAttribute('src')).toBe('/media/video-1-thumb.webp');
+
+    (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>(
+      '.gallery-card__open',
+    )?.click();
+    fixture.detectChanges();
+    expect(
+      (fixture.nativeElement as HTMLElement).querySelector('.stage--stable img')?.getAttribute('src'),
+    ).toBe(photo.url);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('desplaza la galería al arrastrar y no abre accidentalmente una tarjeta', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };

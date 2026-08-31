@@ -416,10 +416,10 @@ describe('App', () => {
     };
     component.openMainMenu();
     fixture.detectChanges();
-    expect((fixture.nativeElement as HTMLElement).textContent).toContain('Menú principal');
-    expect((fixture.nativeElement as HTMLElement).textContent).toContain(
-      'Todas las fotos y videos',
-    );
+    const menu = fixture.nativeElement as HTMLElement;
+    expect(menu.textContent).toContain('Menú principal');
+    expect(menu.textContent).toContain('Todas las fotos y videos');
+    expect(menu.querySelector('.menu-card__icon svg path')).not.toBeNull();
 
     component.openGallery();
     fixture.detectChanges();

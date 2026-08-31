@@ -226,7 +226,12 @@
             <small>Presentación, clima, audio y equipo</small>
           </button>
           <button class="menu-card" type="button" (click)="openNotifications()">
-            <span class="menu-card__icon">🔔</span>
+            <span class="menu-card__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M18 9a6 6 0 0 0-12 0c0 6-3 6.5-3 8h18c0-1.5-3-2-3-8Z" />
+                <path d="M9.5 20h5" />
+              </svg>
+            </span>
             <strong>Notificaciones</strong>
             <small>
               {{

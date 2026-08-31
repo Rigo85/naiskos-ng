@@ -536,6 +536,17 @@ select {
   font-size: 34px;
 }
 
+.menu-card__icon > svg {
+  display: block;
+  width: 34px;
+  height: 34px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
 .menu-card strong {
   font-size: 17px;
 }

@@ -290,12 +290,13 @@ export class App implements OnDestroy {
   private readonly activePointers = new Map<number, ActivePointer>();
   private photoGesture: PhotoGestureState | null = null;
   private suppressNavigationUntilPointersClear = false;
+  private photoTimerInteractionMediaId: string | null = null;
   private photoTimer: number | undefined;
+  private photoTimerGeneration = 0;
   private crossfadeTimer: number | undefined;
   private videoEndWatchdogTimer: number | undefined;
   private pausedVideoAdvanceTimer: number | undefined;
   private navigationGeneration = 0;
-  private queuedDirection: -1 | 1 | null = null;
   private lastTapAt = 0;
   private lastTapSide: 'left' | 'right' | null = null;
   private galleryDrag: GalleryDragState | null = null;
@@ -371,6 +372,9 @@ export class App implements OnDestroy {
       return;
     }
     const target = event.currentTarget as HTMLElement;
+    if (this.activePointers.size === 0) {
+      this.beginPhotoTimerInteraction();
+    }
     if (typeof target.setPointerCapture === 'function') {
       target.setPointerCapture(event.pointerId);
     }
@@ -486,7 +490,6 @@ export class App implements OnDestroy {
     let consumed = false;
     if (gesture && this.photoGestureIncludesPointer(gesture, event.pointerId)) {
       if (gesture.changed) {
-        this.restartPhotoTimerForInteraction(gesture.mediaId);
         consumed = true;
       } else {
         this.photoTransform.set({ mediaId: gesture.mediaId, ...gesture.startTransform });
@@ -503,14 +506,17 @@ export class App implements OnDestroy {
       this.pointerStart = null;
       if (this.activePointers.size === 0) {
         this.suppressNavigationUntilPointersClear = false;
+        this.finishPhotoTimerInteraction();
       }
       return;
     }
     if (consumed || this.overlayOpen()) {
       this.pointerStart = null;
+      this.finishPhotoTimerInteraction();
       return;
     }
     if (!this.pointerStart || this.pointerStart.pointerId !== event.pointerId) {
+      this.finishPhotoTimerInteraction();
       return;
     }
 
@@ -526,14 +532,17 @@ export class App implements OnDestroy {
     const action = classifyGesture(start, end, bounds.width);
 
     if (action === 'open-settings') {
+      this.abandonPhotoTimerInteraction();
       this.openMainMenu();
       return;
     }
     if (action === 'next') {
+      this.abandonPhotoTimerInteraction();
       this.navigate(1);
       return;
     }
     if (action === 'previous') {
+      this.abandonPhotoTimerInteraction();
       this.navigate(-1);
       return;
     }
@@ -543,17 +552,18 @@ export class App implements OnDestroy {
       this.lastTapAt = event.timeStamp;
       this.lastTapSide = side;
       if (!isSecondTap) {
+        this.abandonPhotoTimerInteraction();
         this.navigate(side === 'left' ? -1 : 1);
+        return;
       }
     }
+    this.finishPhotoTimerInteraction();
   }
 
   protected cancelPointer(event: PointerEvent): void {
     const gesture = this.photoGesture;
     if (gesture && this.photoGestureIncludesPointer(gesture, event.pointerId)) {
-      if (gesture.changed) {
-        this.restartPhotoTimerForInteraction(gesture.mediaId);
-      } else {
+      if (!gesture.changed) {
         this.photoTransform.set({ mediaId: gesture.mediaId, ...gesture.startTransform });
       }
       this.photoGesture = null;
@@ -561,6 +571,9 @@ export class App implements OnDestroy {
     this.activePointers.delete(event.pointerId);
     this.pointerStart = null;
     this.suppressNavigationUntilPointersClear = this.activePointers.size > 0;
+    if (this.activePointers.size === 0) {
+      this.finishPhotoTimerInteraction();
+    }
   }
 
   protected preventContextMenu(event: Event): void {
@@ -1127,7 +1140,35 @@ export class App implements OnDestroy {
       return;
     }
     gesture.changed = true;
-    this.restartPhotoTimerForInteraction(gesture.mediaId);
+  }
+
+  private beginPhotoTimerInteraction(): void {
+    const current = this.currentMedia();
+    if (
+      current?.kind !== 'photo' ||
+      this.overlayOpen() ||
+      this.preparingTransition() ||
+      this.crossfade()
+    ) {
+      return;
+    }
+    this.photoTimerInteractionMediaId = current.id;
+    this.clearPhotoTimer();
+  }
+
+  private finishPhotoTimerInteraction(): void {
+    if (this.activePointers.size > 0) {
+      return;
+    }
+    const mediaId = this.photoTimerInteractionMediaId;
+    this.photoTimerInteractionMediaId = null;
+    if (mediaId) {
+      this.restartPhotoTimerForInteraction(mediaId);
+    }
+  }
+
+  private abandonPhotoTimerInteraction(): void {
+    this.photoTimerInteractionMediaId = null;
   }
 
   private restartPhotoTimerForInteraction(mediaId: string): void {
@@ -1174,6 +1215,7 @@ export class App implements OnDestroy {
     this.activePointers.clear();
     this.photoGesture = null;
     this.suppressNavigationUntilPointersClear = false;
+    this.photoTimerInteractionMediaId = null;
   }
 
   private resetPhotoTransform(): void {
@@ -1294,7 +1336,6 @@ export class App implements OnDestroy {
       return;
     }
     if (this.preparingTransition() || this.crossfade()) {
-      this.queuedDirection = direction;
       return;
     }
     const active = this.manifest();
@@ -1357,9 +1398,7 @@ export class App implements OnDestroy {
           ? 'No se pudo preparar el siguiente medio.'
           : 'No hay otro medio disponible.',
       );
-      if (!this.runQueuedNavigation()) {
-        this.resumeAfterAbortedNavigation(outgoingVideoWasPlaying);
-      }
+      this.resumeAfterAbortedNavigation(outgoingVideoWasPlaying);
       return;
     }
 
@@ -1371,9 +1410,7 @@ export class App implements OnDestroy {
       }
       this.currentIndex.set(target.index);
       this.preparingTransition.set(false);
-      if (!this.runQueuedNavigation()) {
-        this.resumeAfterAbortedNavigation(outgoingVideoWasPlaying);
-      }
+      this.resumeAfterAbortedNavigation(outgoingVideoWasPlaying);
       return;
     }
 
@@ -1431,19 +1468,9 @@ export class App implements OnDestroy {
     this.crossfadeTimer = undefined;
     this.crossfade.set(null);
     this.resetPhotoTransform();
-    if (!this.runQueuedNavigation() && this.currentMedia()?.kind === 'video') {
+    if (this.currentMedia()?.kind === 'video') {
       this.playCurrentVideo();
     }
-  }
-
-  private runQueuedNavigation(): boolean {
-    const direction = this.queuedDirection;
-    this.queuedDirection = null;
-    if (direction !== null) {
-      queueMicrotask(() => this.navigate(direction));
-      return true;
-    }
-    return false;
   }
 
   private completeVideo(mediaId: string): void {
@@ -1531,13 +1558,37 @@ export class App implements OnDestroy {
 
   private schedulePhotoAdvance(media: MediaItem | null, duration: number): void {
     this.clearPhotoTimer();
-    if (!media || media.kind !== 'photo' || this.overlayOpen() || this.videoPaused()) {
+    if (
+      !media ||
+      media.kind !== 'photo' ||
+      this.overlayOpen() ||
+      this.videoPaused() ||
+      this.activePointers.size > 0 ||
+      this.photoTimerInteractionMediaId !== null
+    ) {
       return;
     }
-    this.photoTimer = window.setTimeout(() => this.navigate(1), duration * 1_000);
+    const generation = this.photoTimerGeneration;
+    const mediaId = media.id;
+    this.photoTimer = window.setTimeout(() => {
+      this.photoTimer = undefined;
+      if (
+        generation !== this.photoTimerGeneration ||
+        this.currentMedia()?.id !== mediaId ||
+        this.activePointers.size > 0 ||
+        this.photoTimerInteractionMediaId !== null ||
+        this.overlayOpen() ||
+        this.preparingTransition() ||
+        this.crossfade()
+      ) {
+        return;
+      }
+      this.navigate(1);
+    }, duration * 1_000);
   }
 
   private clearPhotoTimer(): void {
+    this.photoTimerGeneration += 1;
     if (this.photoTimer !== undefined) {
       window.clearTimeout(this.photoTimer);
       this.photoTimer = undefined;

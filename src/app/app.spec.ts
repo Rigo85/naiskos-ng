@@ -284,6 +284,46 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('suspende el contador desde que comienza un pellizco real', async () => {
+    vi.useFakeTimers();
+    servedManifest = {
+      ...manifest,
+      settings: { ...DEFAULT_FRAME_SETTINGS, photoDurationSeconds: 3 },
+      media: [photo, secondPhoto],
+    };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const compiled = fixture.nativeElement as HTMLElement;
+    const frame = compiled.querySelector('.frame') as HTMLElement;
+    setViewerBounds(frame);
+
+    await vi.advanceTimersByTimeAsync(2_900);
+    dispatchPointer(frame, 'pointerdown', 500, 400, 1, 'touch');
+    dispatchPointer(frame, 'pointerdown', 700, 400, 2, 'touch');
+    await vi.advanceTimersByTimeAsync(500);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.stage--incoming')).toBeNull();
+
+    dispatchPointer(frame, 'pointermove', 900, 400, 2, 'touch');
+    dispatchPointer(frame, 'pointerup', 900, 400, 2, 'touch');
+    dispatchPointer(frame, 'pointerup', 500, 400, 1, 'touch');
+
+    await vi.advanceTimersByTimeAsync(2_999);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.stage--incoming')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.stage--incoming img')?.getAttribute('src')).toBe(
+      secondPhoto.url,
+    );
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('desplaza una fotografía ampliada sin activar la navegación lateral', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [photo, secondPhoto] };
@@ -850,7 +890,7 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
-  it('conserva sólo la última navegación solicitada durante el crossfade', async () => {
+  it('ignora navegaciones adicionales durante el crossfade', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
     const fixture = TestBed.createComponent(App);
@@ -866,13 +906,45 @@ describe('App', () => {
     component.navigate(-1);
 
     await vi.advanceTimersByTimeAsync(450);
+    fixture.detectChanges();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--stable img')
+        ?.getAttribute('src'),
+    ).toBe(secondPhoto.url);
+    expect((fixture.nativeElement as HTMLElement).querySelector('.stage--incoming')).toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('ignora un avance manual mientras el cambio anterior se está preparando', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
+    let finishPreparation: (() => void) | undefined;
+    mediaReadinessMock.prepare.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPreparation = resolve;
+        }),
+    );
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const component = fixture.componentInstance as unknown as {
+      navigate(direction: -1 | 1): void;
+    };
+    component.navigate(1);
+    component.navigate(1);
+    finishPreparation?.();
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+
     expect(
       (fixture.nativeElement as HTMLElement)
         .querySelector('.stage--incoming img')
         ?.getAttribute('src'),
-    ).toBe(photo.url);
+    ).toBe(secondPhoto.url);
 
     await vi.advanceTimersByTimeAsync(450);
     fixture.detectChanges();
@@ -880,7 +952,8 @@ describe('App', () => {
       (fixture.nativeElement as HTMLElement)
         .querySelector('.stage--stable img')
         ?.getAttribute('src'),
-    ).toBe(photo.url);
+    ).toBe(secondPhoto.url);
+    expect((fixture.nativeElement as HTMLElement).querySelector('.stage--incoming')).toBeNull();
     fixture.destroy();
     vi.useRealTimers();
   });

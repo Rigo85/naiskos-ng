@@ -21,8 +21,8 @@ Telegram y no usa el almacenamiento del navegador como repositorio de medios.
 - Reloj, fecha y clima opcionales.
 - Galería táctil con arrastre, métricas de almacenamiento, rotación y
   eliminación.
-- Configuración local, estado de alta, QR de vinculación, notificaciones,
-  salida del kiosco y apagado del equipo.
+- Configuración local, estado de alta, QR de vinculación, campana con contador,
+  centro de notificaciones, salida del kiosco y apagado del equipo.
 
 Las preferencias se guardan mediante el agente. Cambiar el manifiesto
 multimedia no debe sobrescribir duración, transición, encuadre, orden, volumen,
@@ -110,6 +110,7 @@ gestos, zoom y acciones administrativas.
 `AgentApi` usa rutas relativas bajo `/api/v1` para:
 
 - manifiesto, clima y aprovisionamiento;
+- consulta, lectura y ocultación de notificaciones;
 - actualización o restauración de ajustes;
 - encuadre, rotación y eliminación de medios;
 - salida de Naiskos y apagado del equipo.

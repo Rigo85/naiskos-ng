@@ -5,7 +5,13 @@ import { vi } from 'vitest';
 import { App } from './app';
 import { AgentApi } from './core/agent-api';
 import { MediaReadiness } from './core/media-readiness';
-import { DEFAULT_FRAME_SETTINGS, FrameManifest, MediaItem, WeatherSnapshot } from './core/models';
+import {
+  DEFAULT_FRAME_SETTINGS,
+  FrameManifest,
+  FrameNotification,
+  MediaItem,
+  WeatherSnapshot,
+} from './core/models';
 
 const photo: MediaItem = {
   id: 'photo-1',
@@ -88,6 +94,7 @@ const secondVideo: MediaItem = {
 };
 
 let servedManifest = manifest;
+let servedNotifications: FrameNotification[] = [];
 const updateMediaMock = vi.fn((id: string, patch: Partial<MediaItem>) => {
   const item = servedManifest.media.find((candidate) => candidate.id === id) ?? photo;
   return of({ ...item, ...patch });
@@ -96,10 +103,15 @@ const rotateMediaMock = vi.fn((_id: string, rotationDegrees: number) =>
   of({ accepted: true, rotationDegrees }),
 );
 const deleteMediaMock = vi.fn(() => of({ accepted: true }));
+const markAllNotificationsReadMock = vi.fn(() => of({ updated: 1 }));
+const dismissNotificationMock = vi.fn(() => of(undefined));
 
 const agentApiMock = {
   getManifest: () => of(servedManifest),
   getWeather: () => of(weather),
+  getNotifications: () => of({ notifications: servedNotifications }),
+  markAllNotificationsRead: markAllNotificationsReadMock,
+  dismissNotification: dismissNotificationMock,
   getProvisioningStatus: () =>
     of({
       state: 'approved',
@@ -187,10 +199,13 @@ function setViewerBounds(element: HTMLElement): void {
 describe('App', () => {
   beforeEach(async () => {
     servedManifest = manifest;
+    servedNotifications = [];
     mediaReadinessMock.prepare.mockClear();
     updateMediaMock.mockClear();
     rotateMediaMock.mockClear();
     deleteMediaMock.mockClear();
+    markAllNotificationsReadMock.mockClear();
+    dismissNotificationMock.mockClear();
     await TestBed.configureTestingModule({
       imports: [App],
       providers: [
@@ -205,6 +220,40 @@ describe('App', () => {
     fixture.detectChanges();
     expect(fixture.componentInstance).toBeTruthy();
     fixture.destroy();
+  });
+
+  it('muestra la campana con contador y abre notificaciones persistentes', async () => {
+    vi.useFakeTimers();
+    servedNotifications = [
+      {
+        id: 'dc3c227d-594e-4a88-ad4c-3ef330394127',
+        kind: 'storage.capacity.blocked',
+        severity: 'error',
+        title: 'Almacenamiento casi lleno',
+        message: 'Libera espacio para continuar sincronizando.',
+        createdAt: '2026-08-31T14:00:00.000Z',
+        updatedAt: '2026-08-31T14:00:00.000Z',
+        readAt: null,
+        resolvedAt: null,
+      },
+    ];
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    const compiled = fixture.nativeElement as HTMLElement;
+    const bell = compiled.querySelector('.notification-bell') as HTMLButtonElement;
+    expect(bell.textContent).toContain('1');
+    expect(bell.querySelector('svg path')).not.toBeNull();
+    bell.click();
+    fixture.detectChanges();
+
+    expect(compiled.textContent).toContain('Almacenamiento casi lleno');
+    expect(markAllNotificationsReadMock).toHaveBeenCalledOnce();
+    expect(compiled.querySelector('.notification-bell')).toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
   });
 
   it('renders media and its metadata from the local manifest', async () => {

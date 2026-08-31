@@ -18,6 +18,7 @@ import {
   DEFAULT_FRAME_SETTINGS,
   EMPTY_WEATHER,
   FitMode,
+  FrameNotification,
   FrameManifest,
   FrameSettings,
   MediaFitMode,
@@ -142,6 +143,7 @@ export class App implements OnDestroy {
   protected readonly manifest = signal<FrameManifest | null>(null);
   protected readonly provisioning = signal<ProvisioningStatus | null>(null);
   protected readonly weather = signal<WeatherSnapshot>({ ...EMPTY_WEATHER });
+  protected readonly notifications = signal<FrameNotification[]>([]);
   protected readonly pendingManifest = signal<FrameManifest | null>(null);
   protected readonly currentIndex = signal(0);
   protected readonly loading = signal(true);
@@ -169,6 +171,7 @@ export class App implements OnDestroy {
   protected readonly provisioningResetPending = signal(false);
   protected readonly pairingRotationPending = signal(false);
   protected readonly pairingRotationError = signal<string | null>(null);
+  protected readonly notificationsError = signal<string | null>(null);
   protected readonly preparingTransition = signal(false);
   protected readonly crossfade = signal<CrossfadeState | null>(null);
   protected readonly photoTransform = signal<ActivePhotoTransform>({
@@ -177,13 +180,10 @@ export class App implements OnDestroy {
   });
 
   protected settingsDraft: FrameSettings = { ...DEFAULT_FRAME_SETTINGS };
-  protected demoNotifications = {
-    enabled: true,
-    sound: true,
-    volume: 0.5,
-  };
-
   protected readonly settings = computed(() => this.manifest()?.settings ?? DEFAULT_FRAME_SETTINGS);
+  protected readonly unreadNotifications = computed(
+    () => this.notifications().filter((item) => !item.readAt).length,
+  );
   protected readonly media = computed(() => this.manifest()?.media ?? []);
   protected readonly currentMedia = computed(() => this.media()[this.currentIndex()] ?? null);
   protected readonly galleryItems = computed(() => {
@@ -341,6 +341,13 @@ export class App implements OnDestroy {
         .pipe(switchMap(() => this.agent.getProvisioningStatus().pipe(catchError(() => of(null)))))
         .subscribe((status) => {
           if (status) this.provisioning.set(status);
+        }),
+    );
+    this.subscriptions.add(
+      timer(0, 3_000)
+        .pipe(switchMap(() => this.agent.getNotifications().pipe(catchError(() => of(null)))))
+        .subscribe((result) => {
+          if (result) this.notifications.set(result.notifications);
         }),
     );
 
@@ -763,6 +770,43 @@ export class App implements OnDestroy {
 
   protected openNotifications(): void {
     this.openOverlay('notifications');
+    this.notificationsError.set(null);
+    if (this.unreadNotifications() === 0) return;
+    const readAt = new Date().toISOString();
+    const previous = this.notifications();
+    this.notifications.set(
+      previous.map((item) => (item.readAt ? item : { ...item, readAt, updatedAt: readAt })),
+    );
+    this.agent.markAllNotificationsRead().subscribe({
+      error: () => {
+        this.notifications.set(previous);
+        this.notificationsError.set('No se pudieron marcar los avisos como leídos.');
+      },
+    });
+  }
+
+  protected dismissNotification(notificationId: string): void {
+    const previous = this.notifications();
+    this.notifications.set(previous.filter((item) => item.id !== notificationId));
+    this.notificationsError.set(null);
+    this.agent.dismissNotification(notificationId).subscribe({
+      error: () => {
+        this.notifications.set(previous);
+        this.notificationsError.set('No se pudo ocultar la notificación.');
+      },
+    });
+  }
+
+  protected formatNotificationTime(value: string): string {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return '';
+    return new Intl.DateTimeFormat('es-PE', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: !this.settings().use24Hour,
+    }).format(date);
   }
 
   protected openSettings(): void {

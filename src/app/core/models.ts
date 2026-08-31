@@ -107,3 +107,15 @@ export interface ProvisioningStatus {
   pairingCode: string | null;
   pairingDeepLink: string | null;
 }
+
+export interface FrameNotification {
+  id: string;
+  kind: string;
+  severity: 'info' | 'warning' | 'error';
+  title: string;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
+  readAt: string | null;
+  resolvedAt: string | null;
+}

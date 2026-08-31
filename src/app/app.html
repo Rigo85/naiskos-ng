@@ -166,6 +166,22 @@
     <div class="status-pill" role="status">{{ connectionWarning() }}</div>
   }
 
+  @if (unreadNotifications() > 0 && activeView() === 'viewer') {
+    <button
+      class="notification-bell"
+      type="button"
+      (pointerdown)="$event.stopPropagation()"
+      (click)="openNotifications()"
+      [attr.aria-label]="unreadNotifications() + ' notificaciones sin leer'"
+    >
+      <svg aria-hidden="true" viewBox="0 0 24 24">
+        <path d="M18 9a6 6 0 0 0-12 0c0 6-3 6.5-3 8h18c0-1.5-3-2-3-8Z" />
+        <path d="M9.5 20h5" />
+      </svg>
+      <strong>{{ unreadNotifications() > 99 ? '99+' : unreadNotifications() }}</strong>
+    </button>
+  }
+
   @if (settings().showClock || settings().showDate || settings().showWeather) {
     <aside class="corner-widgets" aria-label="Hora, fecha y clima">
       @if (settings().showClock) {
@@ -210,9 +226,16 @@
             <small>Presentación, clima, audio y equipo</small>
           </button>
           <button class="menu-card" type="button" (click)="openNotifications()">
-            <span class="menu-card__icon">●</span>
+            <span class="menu-card__icon">🔔</span>
             <strong>Notificaciones</strong>
-            <small>Sin avisos pendientes</small>
+            <small>
+              {{
+                unreadNotifications() === 0
+                  ? 'Sin avisos nuevos'
+                  : unreadNotifications() + ' aviso' + (unreadNotifications() === 1 ? '' : 's') +
+                    ' sin leer'
+              }}
+            </small>
           </button>
         </div>
 
@@ -748,40 +771,21 @@
             @case ('notifications') {
               <div class="section-heading">
                 <h3>Notificaciones</h3>
-                <p>Configuración provisional hasta implementar eventos reales.</p>
+                <p>Avisos operativos conservados por el marco y el servicio central.</p>
               </div>
-              <div class="toggle-list toggle-list--single">
-                <label
-                  ><input
-                    type="checkbox"
-                    [checked]="demoNotifications.enabled"
-                    (change)="demoNotifications.enabled = $any($event.target).checked"
-                  />
-                  Mostrar notificaciones</label
-                >
-                <label
-                  ><input
-                    type="checkbox"
-                    [checked]="demoNotifications.sound"
-                    (change)="demoNotifications.sound = $any($event.target).checked"
-                  />
-                  Reproducir sonido</label
-                >
+              <div class="notification-policy">
+                <strong>Visibilidad</strong>
+                <p>
+                  La campana aparece cuando existe un aviso nuevo. Abrirla marca los avisos como
+                  leídos; cada aviso puede ocultarse manualmente.
+                </p>
+                <strong>Canales</strong>
+                <p>
+                  Los fallos de entrega y el bloqueo por almacenamiento también se notifican por
+                  Telegram al remitente y al administrador. El sonido local queda desactivado hasta
+                  definir una señal que no interrumpa fotografías o videos.
+                </p>
               </div>
-              <label class="field">
-                <span>Volumen de notificaciones</span>
-                <div class="range-row">
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    [value]="demoNotifications.volume"
-                    (input)="demoNotifications.volume = +$any($event.target).value"
-                  />
-                  <output>{{ (demoNotifications.volume * 100).toFixed(0) }} %</output>
-                </div>
-              </label>
             }
             @case ('device') {
               <div class="section-heading">
@@ -884,15 +888,57 @@
           ×
         </button>
       </header>
-      <div class="notification-empty">
-        <span>✓</span>
-        <h3>Todo está en orden</h3>
-        <p>No hay notificaciones pendientes en esta muestra.</p>
-        <small
-          >Almacenamiento, sincronización, conexión, procesamiento y actualizaciones aparecerán
-          aquí.</small
-        >
-      </div>
+      @if (notificationsError()) {
+        <p class="notification-error" role="alert">{{ notificationsError() }}</p>
+      }
+      @if (notifications().length === 0) {
+        <div class="notification-empty">
+          <span>✓</span>
+          <h3>Todo está en orden</h3>
+          <p>No hay notificaciones pendientes.</p>
+          <small
+            >Almacenamiento, sincronización, procesamiento y actualizaciones aparecerán aquí.</small
+          >
+        </div>
+      } @else {
+        <div class="notification-list">
+          @for (notification of notifications(); track notification.id) {
+            <article
+              class="notification-card"
+              [class.notification-card--error]="notification.severity === 'error'"
+              [class.notification-card--warning]="notification.severity === 'warning'"
+              [class.notification-card--resolved]="notification.resolvedAt"
+            >
+              <span class="notification-card__marker" aria-hidden="true">
+                {{
+                  notification.severity === 'error'
+                    ? '!'
+                    : notification.severity === 'warning'
+                      ? '▲'
+                      : 'i'
+                }}
+              </span>
+              <div class="notification-card__copy">
+                <div>
+                  <h3>{{ notification.title }}</h3>
+                  @if (notification.resolvedAt) {
+                    <span class="notification-card__resolved">Resuelto</span>
+                  }
+                </div>
+                <p>{{ notification.message }}</p>
+                <small>{{ formatNotificationTime(notification.createdAt) }}</small>
+              </div>
+              <button
+                class="button button--ghost notification-card__dismiss"
+                type="button"
+                (click)="dismissNotification(notification.id)"
+              >
+                Ocultar
+              </button>
+            </article>
+          }
+        </div>
+      }
     </section>
   }
 

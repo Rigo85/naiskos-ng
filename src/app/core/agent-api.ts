@@ -10,6 +10,7 @@ import {
   MediaRotation,
   ProvisioningStatus,
   WeatherSnapshot,
+  FrameNotification,
 } from './models';
 
 export type SystemAction = 'exit' | 'poweroff';
@@ -29,6 +30,25 @@ export class AgentApi {
 
   getProvisioningStatus(): Observable<ProvisioningStatus> {
     return this.http.get<ProvisioningStatus>(`${this.baseUrl}/provisioning`);
+  }
+
+  getNotifications(): Observable<{ notifications: FrameNotification[] }> {
+    return this.http.get<{ notifications: FrameNotification[] }>(
+      `${this.baseUrl}/notifications`,
+    );
+  }
+
+  markAllNotificationsRead(): Observable<{ updated: number }> {
+    return this.http.post<{ updated: number }>(
+      `${this.baseUrl}/notifications/read-all`,
+      {},
+    );
+  }
+
+  dismissNotification(id: string): Observable<void> {
+    return this.http.delete<void>(
+      `${this.baseUrl}/notifications/${encodeURIComponent(id)}`,
+    );
   }
 
   resetProvisioning(): Observable<ProvisioningStatus> {

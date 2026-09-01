@@ -103,11 +103,25 @@ const rotateMediaMock = vi.fn((_id: string, rotationDegrees: number) =>
   of({ accepted: true, rotationDegrees }),
 );
 const deleteMediaMock = vi.fn(() => of({ accepted: true }));
+const deleteMediaBatchMock = vi.fn((ids: string[]) =>
+  of({ accepted: true, count: ids.length }),
+);
 const markAllNotificationsReadMock = vi.fn(() => of({ updated: 1 }));
 const dismissNotificationMock = vi.fn(() => of(undefined));
 
 const agentApiMock = {
   getManifest: () => of(servedManifest),
+  getHealth: () =>
+    of({
+      ok: true,
+      diskTotalBytes: 128_000,
+      diskUsedBytes: 64_000,
+      diskAvailableBytes: 60_000,
+      diskReservedBytes: 4_000,
+      frameDataBytes: 2_000,
+      mediaDataBytes: 1_000,
+      diskUsedPercent: 51.6,
+    }),
   getWeather: () => of(weather),
   getNotifications: () => of({ notifications: servedNotifications }),
   markAllNotificationsRead: markAllNotificationsReadMock,
@@ -156,6 +170,7 @@ const agentApiMock = {
   updateMedia: updateMediaMock,
   rotateMedia: rotateMediaMock,
   deleteMedia: deleteMediaMock,
+  deleteMediaBatch: deleteMediaBatchMock,
   requestSystemAction: () => of({ accepted: true }),
 };
 
@@ -204,6 +219,7 @@ describe('App', () => {
     updateMediaMock.mockClear();
     rotateMediaMock.mockClear();
     deleteMediaMock.mockClear();
+    deleteMediaBatchMock.mockClear();
     markAllNotificationsReadMock.mockClear();
     dismissNotificationMock.mockClear();
     await TestBed.configureTestingModule({
@@ -690,6 +706,41 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('selecciona varios medios y confirma una sola eliminación por lote', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto, video] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    const component = fixture.componentInstance as unknown as { openGallery(): void };
+    component.openGallery();
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    const select = Array.from(
+      compiled.querySelectorAll<HTMLButtonElement>('.gallery-toolbar > button'),
+    ).find((button) => button.textContent?.includes('Seleccionar'))!;
+    select.click();
+    fixture.detectChanges();
+    const cards = compiled.querySelectorAll<HTMLButtonElement>('.gallery-card__open');
+    cards[0]!.click();
+    cards[1]!.click();
+    fixture.detectChanges();
+    const remove = Array.from(
+      compiled.querySelectorAll<HTMLButtonElement>('.gallery-toolbar > button'),
+    ).find((button) => button.textContent?.trim() === 'Eliminar')!;
+    remove.click();
+    fixture.detectChanges();
+    expect(deleteMediaBatchMock).not.toHaveBeenCalled();
+    const confirm = Array.from(
+      compiled.querySelectorAll<HTMLButtonElement>('.gallery-danger-confirmation button'),
+    ).find((button) => button.textContent?.includes('Sí, eliminar selección'))!;
+    confirm.click();
+    expect(deleteMediaBatchMock).toHaveBeenCalledTimes(1);
+    expect(deleteMediaBatchMock.mock.calls[0]![0]).toHaveLength(2);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('organiza la configuración y muestra el clima entregado por el agente', async () => {
     vi.useFakeTimers();
     const fixture = TestBed.createComponent(App);
@@ -700,7 +751,7 @@ describe('App', () => {
     component.openSettings();
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
-    expect(compiled.querySelectorAll('.settings-nav button')).toHaveLength(6);
+    expect(compiled.querySelectorAll('.settings-nav button')).toHaveLength(5);
     expect(compiled.textContent).toContain('Presentación');
 
     (compiled.querySelectorAll('.settings-nav button')[1] as HTMLButtonElement).click();
@@ -710,7 +761,7 @@ describe('App', () => {
     expect(compiled.textContent).toContain('Trujillo, La Libertad, PE');
     expect(compiled.querySelector('.corner-widgets')?.textContent).toContain('24°');
 
-    (compiled.querySelectorAll('.settings-nav button')[5] as HTMLButtonElement).click();
+    (compiled.querySelectorAll('.settings-nav button')[4] as HTMLButtonElement).click();
     fixture.detectChanges();
     expect(compiled.textContent).toContain('Vincular con este marco');
     expect(compiled.textContent).toContain('ABCD-2345-EFGH');

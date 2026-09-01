@@ -669,6 +669,33 @@ select {
   background: #1a1a1d;
 }
 
+.gallery-card--selected {
+  border-color: #d6b276;
+  box-shadow: 0 0 0 2px rgba(214, 178, 118, 0.32);
+}
+
+.gallery-card__check {
+  position: absolute;
+  z-index: 3;
+  top: 9px;
+  left: 9px;
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  color: #17130d;
+  background: rgba(0, 0, 0, 0.54);
+  font-size: 21px;
+  font-weight: 800;
+}
+
+.gallery-card--selected .gallery-card__check {
+  border-color: #d6b276;
+  background: #d6b276;
+}
+
 .gallery-card__open {
   display: block;
   width: 100%;
@@ -1000,6 +1027,92 @@ select {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
   margin-top: 22px;
+}
+
+.storage-capacity {
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.storage-capacity__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.storage-capacity__summary strong {
+  color: #fff;
+  font-size: 24px;
+}
+
+.storage-capacity__summary span,
+.storage-capacity__summary small {
+  color: rgba(255, 255, 255, 0.54);
+}
+
+.storage-capacity__summary small {
+  margin-left: auto;
+}
+
+.storage-capacity__bar {
+  display: flex;
+  height: 18px;
+  margin: 15px 0 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.storage-capacity__bar span {
+  min-width: 0;
+}
+
+.storage-capacity__bar .is-photos,
+.storage-capacity__legend .is-photos::before {
+  background: #d6b276;
+}
+
+.storage-capacity__bar .is-videos,
+.storage-capacity__legend .is-videos::before {
+  background: #7ca7d6;
+}
+
+.storage-capacity__bar .is-other,
+.storage-capacity__legend .is-other::before {
+  background: #77727e;
+}
+
+.storage-capacity__bar .is-available,
+.storage-capacity__legend .is-available::before {
+  background: #4f8f68;
+}
+
+.storage-capacity__bar .is-reserved {
+  background: #333238;
+}
+
+.storage-capacity__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+}
+
+.storage-capacity__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.storage-capacity__legend span::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  content: '';
 }
 
 .storage-grid article {

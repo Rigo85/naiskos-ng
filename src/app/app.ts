@@ -17,6 +17,7 @@ import { MediaReadiness } from './core/media-readiness';
 import {
   DEFAULT_FRAME_SETTINGS,
   EMPTY_WEATHER,
+  AgentHealth,
   FitMode,
   FrameNotification,
   FrameManifest,
@@ -49,7 +50,7 @@ type AppView = 'viewer' | 'menu' | 'gallery' | 'settings' | 'notifications';
 type GalleryFilter = 'all' | 'photo' | 'video';
 type GalleryOrder = 'newest' | 'oldest';
 type SettingsSection =
-  'presentation' | 'widgets' | 'playback' | 'storage' | 'notifications' | 'device';
+  'presentation' | 'widgets' | 'playback' | 'storage' | 'device';
 
 interface RenderedSlide {
   item: MediaItem;
@@ -144,6 +145,7 @@ export class App implements OnDestroy {
   protected readonly provisioning = signal<ProvisioningStatus | null>(null);
   protected readonly weather = signal<WeatherSnapshot>({ ...EMPTY_WEATHER });
   protected readonly notifications = signal<FrameNotification[]>([]);
+  protected readonly health = signal<AgentHealth | null>(null);
   protected readonly pendingManifest = signal<FrameManifest | null>(null);
   protected readonly currentIndex = signal(0);
   protected readonly loading = signal(true);
@@ -161,6 +163,11 @@ export class App implements OnDestroy {
   protected readonly galleryOptionsMessage = signal<string | null>(null);
   protected readonly galleryDeleteConfirming = signal(false);
   protected readonly galleryOperation = signal<GalleryOperation | null>(null);
+  protected readonly gallerySelectionMode = signal(false);
+  protected readonly gallerySelectedIds = signal<ReadonlySet<string>>(new Set());
+  protected readonly galleryBatchConfirming = signal(false);
+  protected readonly galleryBatchSaving = signal(false);
+  protected readonly galleryBatchError = signal<string | null>(null);
   protected readonly now = signal(new Date());
   protected readonly videoPaused = signal(false);
   protected readonly videoCurrentTime = signal(0);
@@ -196,6 +203,12 @@ export class App implements OnDestroy {
           direction * (new Date(left.receivedAt).getTime() - new Date(right.receivedAt).getTime()),
       );
   });
+  protected readonly gallerySelectedCount = computed(() => this.gallerySelectedIds().size);
+  protected readonly galleryAllVisibleSelected = computed(() => {
+    const items = this.galleryItems();
+    const selected = this.gallerySelectedIds();
+    return items.length > 0 && items.every((item) => selected.has(item.id));
+  });
   protected readonly storageSummary = computed(() => {
     const photoItems = this.media().filter((item) => item.kind === 'photo');
     const videoItems = this.media().filter((item) => item.kind === 'video');
@@ -216,6 +229,33 @@ export class App implements OnDestroy {
       photoBytes,
       videoBytes,
       totalBytes: photoBytes + videoBytes,
+    };
+  });
+  protected readonly storageCapacity = computed(() => {
+    const health = this.health();
+    const summary = this.storageSummary();
+    const total = health?.diskTotalBytes ?? 0;
+    const photos = Math.min(summary.photoBytes, total);
+    const videos = Math.min(summary.videoBytes, Math.max(0, total - photos));
+    const used = Math.min(health?.diskUsedBytes ?? 0, total);
+    const other = Math.max(0, used - photos - videos);
+    const available = Math.min(health?.diskAvailableBytes ?? 0, Math.max(0, total - used));
+    const reserved = Math.max(0, total - used - available);
+    const percent = (value: number) => (total > 0 ? (value / total) * 100 : 0);
+    return {
+      total,
+      used,
+      available,
+      reserved,
+      frameData: health?.frameDataBytes ?? 0,
+      photos,
+      videos,
+      other,
+      photoPercent: percent(photos),
+      videoPercent: percent(videos),
+      otherPercent: percent(other),
+      availablePercent: percent(available),
+      reservedPercent: percent(reserved),
     };
   });
   protected readonly displayTime = computed(() =>
@@ -344,6 +384,13 @@ export class App implements OnDestroy {
         .pipe(switchMap(() => this.agent.getProvisioningStatus().pipe(catchError(() => of(null)))))
         .subscribe((status) => {
           if (status) this.provisioning.set(status);
+        }),
+    );
+    this.subscriptions.add(
+      timer(0, 30_000)
+        .pipe(switchMap(() => this.agent.getHealth().pipe(catchError(() => of(null)))))
+        .subscribe((health) => {
+          if (health) this.health.set(health);
         }),
     );
     this.subscriptions.add(
@@ -596,7 +643,68 @@ export class App implements OnDestroy {
 
   protected openGallery(): void {
     this.closeGalleryOptions();
+    this.cancelGallerySelection();
     this.openOverlay('gallery');
+  }
+
+  protected beginGallerySelection(): void {
+    this.gallerySelectionMode.set(true);
+    this.gallerySelectedIds.set(new Set());
+    this.galleryBatchError.set(null);
+  }
+
+  protected cancelGallerySelection(): void {
+    if (this.galleryBatchSaving()) return;
+    this.gallerySelectionMode.set(false);
+    this.gallerySelectedIds.set(new Set());
+    this.galleryBatchConfirming.set(false);
+    this.galleryBatchError.set(null);
+  }
+
+  protected toggleGallerySelection(mediaId: string, event?: Event): void {
+    event?.preventDefault();
+    event?.stopPropagation();
+    if (!this.gallerySelectionMode() || this.galleryBatchSaving()) return;
+    const selected = new Set(this.gallerySelectedIds());
+    if (selected.has(mediaId)) selected.delete(mediaId);
+    else selected.add(mediaId);
+    this.gallerySelectedIds.set(selected);
+  }
+
+  protected toggleAllVisibleGalleryItems(): void {
+    const selected = new Set(this.gallerySelectedIds());
+    if (this.galleryAllVisibleSelected()) {
+      for (const item of this.galleryItems()) selected.delete(item.id);
+    } else {
+      for (const item of this.galleryItems()) selected.add(item.id);
+    }
+    this.gallerySelectedIds.set(selected);
+  }
+
+  protected requestGalleryBatchDelete(): void {
+    if (this.gallerySelectedCount() > 0) this.galleryBatchConfirming.set(true);
+  }
+
+  protected confirmGalleryBatchDelete(): void {
+    const ids = [...this.gallerySelectedIds()];
+    if (ids.length === 0 || this.galleryBatchSaving()) return;
+    this.galleryBatchSaving.set(true);
+    this.galleryBatchError.set(null);
+    this.agent.deleteMediaBatch(ids).subscribe({
+      next: () => {
+        this.galleryBatchSaving.set(false);
+        this.galleryBatchConfirming.set(false);
+        this.gallerySelectionMode.set(false);
+        this.gallerySelectedIds.set(new Set());
+        this.connectionWarning.set(
+          `Eliminación de ${ids.length} elemento${ids.length === 1 ? '' : 's'} solicitada.`,
+        );
+      },
+      error: () => {
+        this.galleryBatchSaving.set(false);
+        this.galleryBatchError.set('No se pudo solicitar la eliminación múltiple.');
+      },
+    });
   }
 
   protected openGalleryOptions(item: MediaItem, event: Event): void {
@@ -829,6 +937,10 @@ export class App implements OnDestroy {
   }
 
   protected showGalleryItem(mediaId: string, event?: MouseEvent): void {
+    if (this.gallerySelectionMode()) {
+      this.toggleGallerySelection(mediaId, event);
+      return;
+    }
     const isSyntheticDragClick =
       this.suppressGalleryClick &&
       Date.now() - this.galleryLastDragAt <= GALLERY_SYNTHETIC_CLICK_WINDOW_MS;

@@ -305,7 +305,28 @@
             <option value="oldest">Más antiguos</option>
           </select>
         </label>
-        <output>{{ galleryItems().length }} resultados</output>
+        @if (gallerySelectionMode()) {
+          <button class="button button--ghost" type="button" (click)="toggleAllVisibleGalleryItems()">
+            {{ galleryAllVisibleSelected() ? 'Deseleccionar visibles' : 'Seleccionar visibles' }}
+          </button>
+          <output>{{ gallerySelectedCount() }} seleccionados</output>
+          <button
+            class="button button--danger"
+            type="button"
+            [disabled]="gallerySelectedCount() === 0"
+            (click)="requestGalleryBatchDelete()"
+          >
+            Eliminar
+          </button>
+          <button class="button button--ghost" type="button" (click)="cancelGallerySelection()">
+            Cancelar
+          </button>
+        } @else {
+          <output>{{ galleryItems().length }} resultados</output>
+          <button class="button button--ghost" type="button" (click)="beginGallerySelection()">
+            Seleccionar
+          </button>
+        }
       </div>
 
       <div
@@ -318,13 +339,21 @@
         (pointerleave)="onGalleryPointerCancel($event)"
       >
         @for (item of galleryItems(); track item.id) {
-          <article class="gallery-card">
+          <article
+            class="gallery-card"
+            [class.gallery-card--selected]="gallerySelectedIds().has(item.id)"
+          >
             <button
               class="gallery-card__open"
               type="button"
               (click)="showGalleryItem(item.id, $event)"
             >
               <span class="gallery-card__preview">
+                @if (gallerySelectionMode()) {
+                  <span class="gallery-card__check" aria-hidden="true">
+                    {{ gallerySelectedIds().has(item.id) ? '✓' : '' }}
+                  </span>
+                }
                 @if (item.kind === 'photo' || item.posterUrl || item.thumbnailUrl) {
                   <img
                     [src]="galleryPreviewUrl(item)"
@@ -354,7 +383,8 @@
                 >
               </span>
             </button>
-            <button
+            @if (!gallerySelectionMode()) {
+              <button
               class="gallery-card__options"
               type="button"
               (pointerdown)="$event.stopPropagation()"
@@ -362,14 +392,49 @@
               [attr.aria-label]="
                 'Opciones de ' + (item.caption || (item.kind === 'photo' ? 'fotografía' : 'video'))
               "
-            >
-              ⋮
-            </button>
+              >
+                ⋮
+              </button>
+            }
           </article>
         } @empty {
           <div class="gallery-empty">No hay medios para este filtro.</div>
         }
       </div>
+
+      @if (galleryBatchConfirming()) {
+        <section class="gallery-options-backdrop" role="dialog" aria-modal="true">
+          <div class="gallery-options-dialog">
+            <span class="eyebrow">Eliminación múltiple</span>
+            <h2>Eliminar {{ gallerySelectedCount() }} elementos</h2>
+            <p>
+              Se eliminarán únicamente de este marco. La acción se enviará como un solo lote y
+              quedará registrada en la central.
+            </p>
+            @if (galleryBatchError()) {
+              <p class="confirmation-dialog__error" role="alert">{{ galleryBatchError() }}</p>
+            }
+            <div class="gallery-danger-confirmation">
+              <button
+                class="button button--ghost"
+                type="button"
+                [disabled]="galleryBatchSaving()"
+                (click)="galleryBatchConfirming.set(false)"
+              >
+                Cancelar
+              </button>
+              <button
+                class="button button--danger"
+                type="button"
+                [disabled]="galleryBatchSaving()"
+                (click)="confirmGalleryBatchDelete()"
+              >
+                {{ galleryBatchSaving() ? 'Solicitando…' : 'Sí, eliminar selección' }}
+              </button>
+            </div>
+          </div>
+        </section>
+      }
 
       @if (galleryOptionsItem(); as item) {
         <section
@@ -572,13 +637,6 @@
           </button>
           <button
             type="button"
-            [class.is-active]="settingsSection() === 'notifications'"
-            (click)="settingsSection.set('notifications')"
-          >
-            Notificaciones
-          </button>
-          <button
-            type="button"
             [class.is-active]="settingsSection() === 'device'"
             (click)="settingsSection.set('device')"
           >
@@ -753,8 +811,30 @@
             @case ('storage') {
               <div class="section-heading">
                 <h3>Almacenamiento</h3>
-                <p>Resumen calculado a partir del manifiesto local.</p>
+                <p>Capacidad real del disco y uso correspondiente a Naiskos.</p>
               </div>
+              @if (storageCapacity().total > 0) {
+                <section class="storage-capacity" aria-label="Distribución del almacenamiento">
+                  <div class="storage-capacity__summary">
+                    <strong>{{ formatBytes(storageCapacity().used) }}</strong>
+                    <span>usados de {{ formatBytes(storageCapacity().total) }}</span>
+                    <small>{{ formatBytes(storageCapacity().available) }} disponibles</small>
+                  </div>
+                  <div class="storage-capacity__bar" aria-hidden="true">
+                    <span class="is-photos" [style.width.%]="storageCapacity().photoPercent"></span>
+                    <span class="is-videos" [style.width.%]="storageCapacity().videoPercent"></span>
+                    <span class="is-other" [style.width.%]="storageCapacity().otherPercent"></span>
+                    <span class="is-available" [style.width.%]="storageCapacity().availablePercent"></span>
+                    <span class="is-reserved" [style.width.%]="storageCapacity().reservedPercent"></span>
+                  </div>
+                  <div class="storage-capacity__legend">
+                    <span class="is-photos">Fotos</span>
+                    <span class="is-videos">Videos</span>
+                    <span class="is-other">Sistema y otros</span>
+                    <span class="is-available">Disponible</span>
+                  </div>
+                </section>
+              }
               <div class="storage-grid">
                 <article>
                   <strong>{{ storageSummary().photoCount }}</strong
@@ -767,31 +847,9 @@
                 </article>
                 <article>
                   <strong>{{ formatBytes(storageSummary().totalBytes) }}</strong
-                  ><span>Total de medios</span><small>En uso por Naiskos</small>
+                  ><span>Total de medios</span
+                  ><small>{{ formatBytes(storageCapacity().frameData) }} en toda la data de Naiskos</small>
                 </article>
-              </div>
-              <p class="demo-note">
-                La capacidad total y el espacio libre se incorporarán desde las métricas del agente
-                local.
-              </p>
-            }
-            @case ('notifications') {
-              <div class="section-heading">
-                <h3>Notificaciones</h3>
-                <p>Avisos operativos conservados por el marco y el servicio central.</p>
-              </div>
-              <div class="notification-policy">
-                <strong>Visibilidad</strong>
-                <p>
-                  La campana aparece cuando existe un aviso nuevo. Abrirla marca los avisos como
-                  leídos; cada aviso puede ocultarse manualmente.
-                </p>
-                <strong>Canales</strong>
-                <p>
-                  Los fallos de entrega y el bloqueo por almacenamiento también se notifican por
-                  Telegram al remitente y al administrador. El sonido local queda desactivado hasta
-                  definir una señal que no interrumpa fotografías o videos.
-                </p>
               </div>
             }
             @case ('device') {

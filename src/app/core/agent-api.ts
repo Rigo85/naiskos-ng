@@ -11,6 +11,7 @@ import {
   ProvisioningStatus,
   WeatherSnapshot,
   FrameNotification,
+  AgentHealth,
 } from './models';
 
 export type SystemAction = 'exit' | 'poweroff';
@@ -22,6 +23,10 @@ export class AgentApi {
 
   getManifest(): Observable<FrameManifest> {
     return this.http.get<FrameManifest>(`${this.baseUrl}/manifest`);
+  }
+
+  getHealth(): Observable<AgentHealth> {
+    return this.http.get<AgentHealth>(`${this.baseUrl}/health`);
   }
 
   getWeather(): Observable<WeatherSnapshot> {
@@ -92,6 +97,14 @@ export class AgentApi {
   deleteMedia(id: string): Observable<{ accepted: boolean }> {
     return this.http.delete<{ accepted: boolean }>(
       `${this.baseUrl}/media/${encodeURIComponent(id)}`,
+    );
+  }
+
+  deleteMediaBatch(ids: string[]): Observable<{ accepted: boolean; count: number }> {
+    return this.http.post<{ accepted: boolean; count: number }>(
+      `${this.baseUrl}/media/batch/delete`,
+      { ids },
+      { headers: { 'X-Naiskos-Request': 'viewer' } },
     );
   }
 

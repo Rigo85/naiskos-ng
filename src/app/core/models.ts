@@ -121,3 +121,14 @@ export interface FrameNotification {
   readAt: string | null;
   resolvedAt: string | null;
 }
+
+export interface AgentHealth {
+  ok: boolean;
+  diskTotalBytes: number;
+  diskUsedBytes: number;
+  diskAvailableBytes: number;
+  diskReservedBytes: number;
+  frameDataBytes: number;
+  mediaDataBytes: number;
+  diskUsedPercent: number;
+}

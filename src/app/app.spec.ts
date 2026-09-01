@@ -236,6 +236,17 @@ describe('App', () => {
         readAt: null,
         resolvedAt: null,
       },
+      {
+        id: '620d4409-6fa8-49f8-87cb-86861515e328',
+        kind: 'sync.stale',
+        severity: 'warning',
+        title: 'Sincronización atrasada',
+        message: 'El marco volvió a sincronizar correctamente.',
+        createdAt: '2026-08-31T14:05:00.000Z',
+        updatedAt: '2026-08-31T14:06:00.000Z',
+        readAt: '2026-08-31T14:06:00.000Z',
+        resolvedAt: '2026-08-31T14:06:00.000Z',
+      },
     ];
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
@@ -250,6 +261,9 @@ describe('App', () => {
     fixture.detectChanges();
 
     expect(compiled.textContent).toContain('Almacenamiento casi lleno');
+    const resolved = compiled.querySelector('.notification-card--resolved');
+    expect(resolved?.textContent).toContain('Detectado:');
+    expect(resolved?.textContent).toContain('Resuelto:');
     expect(markAllNotificationsReadMock).toHaveBeenCalledOnce();
     expect(compiled.querySelector('.notification-bell')).toBeNull();
     fixture.destroy();

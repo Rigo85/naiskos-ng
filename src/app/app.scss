@@ -1263,9 +1263,14 @@ select {
   line-height: 1.45;
 }
 
-.notification-card__copy small {
-  display: block;
+.notification-card__times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
   margin-top: 8px;
+}
+
+.notification-card__times small {
   color: rgba(255, 255, 255, 0.44);
 }
 

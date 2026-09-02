@@ -133,7 +133,6 @@ const GALLERY_MIN_CARD_WIDTH_PX = 178;
 const GALLERY_GAP_PX = 14;
 const GALLERY_HORIZONTAL_PADDING_PX = 48;
 const GALLERY_CARD_CAPTION_HEIGHT_PX = 58;
-const GALLERY_OVERSCAN_ROWS = 2;
 const PHOTO_GESTURE_THRESHOLD_PX = 8;
 const PHOTO_PINCH_SCALE_THRESHOLD = 0.02;
 const PHOTO_ZOOM_ACTIVE_THRESHOLD = 1.001;
@@ -184,7 +183,7 @@ export class App implements OnDestroy {
     rowStep: 218,
     viewportHeight: 540,
   });
-  protected readonly galleryFirstVisibleRow = signal(0);
+  protected readonly galleryCurrentPage = signal(0);
   protected readonly galleryBatchConfirming = signal(false);
   protected readonly galleryBatchSaving = signal(false);
   protected readonly galleryBatchError = signal<string | null>(null);
@@ -233,10 +232,13 @@ export class App implements OnDestroy {
     const items = this.galleryItems();
     const geometry = this.galleryGeometry();
     const totalRows = Math.ceil(items.length / geometry.columns);
-    const visibleRows = Math.max(1, Math.ceil(geometry.viewportHeight / geometry.rowStep));
-    const firstVisibleRow = Math.min(this.galleryFirstVisibleRow(), Math.max(0, totalRows - 1));
-    const startRow = Math.max(0, firstVisibleRow - GALLERY_OVERSCAN_ROWS);
-    const endRow = Math.min(totalRows, firstVisibleRow + visibleRows + GALLERY_OVERSCAN_ROWS + 1);
+    const pageRows = Math.max(1, Math.ceil(geometry.viewportHeight / geometry.rowStep));
+    const totalPages = Math.ceil(totalRows / pageRows);
+    const currentPage = Math.min(this.galleryCurrentPage(), Math.max(0, totalPages - 1));
+    const startPage = Math.max(0, currentPage - 1);
+    const endPage = Math.min(totalPages, currentPage + 2);
+    const startRow = startPage * pageRows;
+    const endRow = Math.min(totalRows, endPage * pageRows);
     return {
       items: items.slice(startRow * geometry.columns, endRow * geometry.columns),
       columns: geometry.columns,
@@ -278,6 +280,7 @@ export class App implements OnDestroy {
     const available = Math.min(health?.diskAvailableBytes ?? 0, Math.max(0, total - used));
     const reserved = Math.max(0, total - used - available);
     const percent = (value: number) => (total > 0 ? (value / total) * 100 : 0);
+    const usedPercent = (value: number) => (used > 0 ? (value / used) * 100 : 0);
     return {
       total,
       used,
@@ -287,11 +290,15 @@ export class App implements OnDestroy {
       photos,
       videos,
       other,
+      usedPercent: percent(used),
       photoPercent: percent(photos),
       videoPercent: percent(videos),
       otherPercent: percent(other),
       availablePercent: percent(available),
       reservedPercent: percent(reserved),
+      photoUsedPercent: usedPercent(photos),
+      videoUsedPercent: usedPercent(videos),
+      otherUsedPercent: usedPercent(other),
     };
   });
   protected readonly displayTime = computed(() =>
@@ -932,12 +939,12 @@ export class App implements OnDestroy {
   protected onGalleryScroll(event: Event): void {
     const viewport = event.currentTarget as HTMLElement;
     this.updateGalleryGeometry(viewport);
-    const firstVisibleRow = Math.max(
-      0,
-      Math.floor(viewport.scrollTop / this.galleryGeometry().rowStep),
-    );
-    if (firstVisibleRow !== this.galleryFirstVisibleRow()) {
-      this.galleryFirstVisibleRow.set(firstVisibleRow);
+    const geometry = this.galleryGeometry();
+    const pageRows = Math.max(1, Math.ceil(geometry.viewportHeight / geometry.rowStep));
+    const pageHeight = pageRows * geometry.rowStep;
+    const currentPage = Math.max(0, Math.floor(viewport.scrollTop / pageHeight));
+    if (currentPage !== this.galleryCurrentPage()) {
+      this.galleryCurrentPage.set(currentPage);
     }
   }
 
@@ -1570,7 +1577,7 @@ export class App implements OnDestroy {
   }
 
   private resetGalleryViewport(): void {
-    this.galleryFirstVisibleRow.set(0);
+    this.galleryCurrentPage.set(0);
     window.requestAnimationFrame(() => {
       const viewport = this.galleryViewport?.nativeElement;
       if (!viewport) return;

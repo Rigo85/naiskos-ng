@@ -1071,42 +1071,63 @@ select {
   margin-left: auto;
 }
 
+.storage-capacity__label {
+  margin: 18px 0 0;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.storage-capacity__label--breakdown {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 2px solid rgba(255, 255, 255, 0.2);
+}
+
 .storage-capacity__bar {
   display: flex;
-  height: 24px;
-  margin: 15px 0 12px;
+  height: 28px;
+  margin: 8px 0 12px;
   overflow: hidden;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  border: 2px solid #fff;
+  border-radius: 8px;
+  background: #08080a;
 }
 
 .storage-capacity__bar span {
-  min-width: 3px;
-  box-shadow: inset -2px 0 #111114;
+  min-width: 5px;
+  box-shadow: inset -3px 0 #08080a;
+}
+
+.storage-capacity__bar .is-used,
+.storage-capacity__legend .is-used::before {
+  background: #ff2bd6;
 }
 
 .storage-capacity__bar .is-photos,
 .storage-capacity__legend .is-photos::before {
-  background: #ffb000;
+  background: #ffea00;
 }
 
 .storage-capacity__bar .is-videos,
 .storage-capacity__legend .is-videos::before {
-  background: #00c8ff;
+  background: #006eff;
 }
 
 .storage-capacity__bar .is-other,
 .storage-capacity__legend .is-other::before {
-  background: #a66cff;
+  background: #ff2bd6;
 }
 
 .storage-capacity__bar .is-available,
 .storage-capacity__legend .is-available::before {
-  background: #32c878;
+  background: #00e5ff;
 }
 
-.storage-capacity__bar .is-reserved {
-  background: #596170;
+.storage-capacity__bar .is-reserved,
+.storage-capacity__legend .is-reserved::before {
+  background: repeating-linear-gradient(135deg, #fff 0 5px, #202026 5px 9px);
   box-shadow: none;
 }
 
@@ -1125,10 +1146,22 @@ select {
 }
 
 .storage-capacity__legend span::before {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  content: '';
+  display: grid;
+  width: 24px;
+  height: 20px;
+  flex: 0 0 24px;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 5px;
+  color: #050507;
+  content: attr(data-key);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.storage-capacity__legend .is-videos::before {
+  color: #fff;
 }
 
 .storage-grid article {

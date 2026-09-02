@@ -840,24 +840,13 @@
                     <span>usados de {{ formatBytes(storageCapacity().total) }}</span>
                     <small>{{ formatBytes(storageCapacity().available) }} disponibles</small>
                   </div>
-                  <div class="storage-capacity__bar" aria-hidden="true">
-                    @if (storageCapacity().photoPercent > 0) {
-                      <span
-                        class="is-photos"
-                        [style.width.%]="storageCapacity().photoPercent"
-                      ></span>
-                    }
-                    @if (storageCapacity().videoPercent > 0) {
-                      <span
-                        class="is-videos"
-                        [style.width.%]="storageCapacity().videoPercent"
-                      ></span>
-                    }
-                    @if (storageCapacity().otherPercent > 0) {
-                      <span
-                        class="is-other"
-                        [style.width.%]="storageCapacity().otherPercent"
-                      ></span>
+                  <p class="storage-capacity__label">Disco completo</p>
+                  <div
+                    class="storage-capacity__bar storage-capacity__bar--total"
+                    aria-hidden="true"
+                  >
+                    @if (storageCapacity().usedPercent > 0) {
+                      <span class="is-used" [style.width.%]="storageCapacity().usedPercent"></span>
                     }
                     @if (storageCapacity().availablePercent > 0) {
                       <span
@@ -873,19 +862,58 @@
                     }
                   </div>
                   <div class="storage-capacity__legend">
-                    <span class="is-photos"
-                      >Fotos · {{ formatStoragePercent(storageCapacity().photoPercent) }}</span
+                    <span class="is-used" data-key="U"
+                      >Usado · {{ formatStoragePercent(storageCapacity().usedPercent) }}</span
                     >
-                    <span class="is-videos"
-                      >Videos · {{ formatStoragePercent(storageCapacity().videoPercent) }}</span
-                    >
-                    <span class="is-other"
-                      >Sistema y otros ·
-                      {{ formatStoragePercent(storageCapacity().otherPercent) }}</span
-                    >
-                    <span class="is-available"
+                    <span class="is-available" data-key="D"
                       >Disponible ·
                       {{ formatStoragePercent(storageCapacity().availablePercent) }}</span
+                    >
+                    <span class="is-reserved" data-key="R"
+                      >Reservado ·
+                      {{ formatStoragePercent(storageCapacity().reservedPercent) }}</span
+                    >
+                  </div>
+
+                  <p class="storage-capacity__label storage-capacity__label--breakdown">
+                    Detalle del espacio usado
+                  </p>
+                  <div
+                    class="storage-capacity__bar storage-capacity__bar--breakdown"
+                    aria-hidden="true"
+                  >
+                    @if (storageCapacity().photoUsedPercent > 0) {
+                      <span
+                        class="is-photos"
+                        [style.width.%]="storageCapacity().photoUsedPercent"
+                      ></span>
+                    }
+                    @if (storageCapacity().videoUsedPercent > 0) {
+                      <span
+                        class="is-videos"
+                        [style.width.%]="storageCapacity().videoUsedPercent"
+                      ></span>
+                    }
+                    @if (storageCapacity().otherUsedPercent > 0) {
+                      <span
+                        class="is-other"
+                        [style.width.%]="storageCapacity().otherUsedPercent"
+                      ></span>
+                    }
+                  </div>
+                  <div class="storage-capacity__legend">
+                    <span class="is-photos" data-key="F"
+                      >Fotos · {{ formatStoragePercent(storageCapacity().photoUsedPercent) }} de lo
+                      usado</span
+                    >
+                    <span class="is-videos" data-key="V"
+                      >Videos · {{ formatStoragePercent(storageCapacity().videoUsedPercent) }} de lo
+                      usado</span
+                    >
+                    <span class="is-other" data-key="S"
+                      >Sistema y otros ·
+                      {{ formatStoragePercent(storageCapacity().otherUsedPercent) }} de lo
+                      usado</span
                     >
                   </div>
                 </section>

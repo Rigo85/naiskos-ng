@@ -486,7 +486,17 @@ describe('App', () => {
 
     expect(compiled.textContent).toContain('1200 resultados');
     expect(renderedCards).toBeGreaterThan(0);
-    expect(renderedCards).toBeLessThan(100);
+    expect(renderedCards).toBeLessThanOrEqual(54);
+
+    const firstRenderedId = compiled.querySelector('.gallery-card__open img')?.getAttribute('src');
+    const grid = compiled.querySelector('.gallery-grid') as HTMLElement;
+    grid.scrollTop = 1_308;
+    grid.dispatchEvent(new Event('scroll'));
+    fixture.detectChanges();
+    expect(compiled.querySelectorAll('.gallery-card')).toHaveLength(54);
+    expect(compiled.querySelector('.gallery-card__open img')?.getAttribute('src')).not.toBe(
+      firstRenderedId,
+    );
 
     await vi.advanceTimersByTimeAsync(2_000);
     fixture.detectChanges();

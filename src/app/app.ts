@@ -3,6 +3,7 @@ import {
   ElementRef,
   OnDestroy,
   QueryList,
+  ViewChild,
   ViewChildren,
   computed,
   effect,
@@ -49,8 +50,7 @@ type SlidePhase = 'stable' | 'outgoing' | 'incoming';
 type AppView = 'viewer' | 'menu' | 'gallery' | 'settings' | 'notifications';
 type GalleryFilter = 'all' | 'photo' | 'video';
 type GalleryOrder = 'newest' | 'oldest';
-type SettingsSection =
-  'presentation' | 'widgets' | 'playback' | 'storage' | 'device';
+type SettingsSection = 'presentation' | 'widgets' | 'playback' | 'storage' | 'device';
 
 interface RenderedSlide {
   item: MediaItem;
@@ -77,6 +77,12 @@ interface GalleryDragState {
   startX: number;
   startY: number;
   scrollTop: number;
+}
+
+interface GalleryGeometry {
+  columns: number;
+  rowStep: number;
+  viewportHeight: number;
 }
 
 interface GalleryOperation {
@@ -123,6 +129,11 @@ const VIDEO_END_WATCHDOG_GRACE_MS = 500;
 const VIDEO_END_STALL_WINDOW_SECONDS = 2;
 const GALLERY_DRAG_THRESHOLD_PX = 8;
 const GALLERY_SYNTHETIC_CLICK_WINDOW_MS = 250;
+const GALLERY_MIN_CARD_WIDTH_PX = 178;
+const GALLERY_GAP_PX = 14;
+const GALLERY_HORIZONTAL_PADDING_PX = 48;
+const GALLERY_CARD_CAPTION_HEIGHT_PX = 58;
+const GALLERY_OVERSCAN_ROWS = 2;
 const PHOTO_GESTURE_THRESHOLD_PX = 8;
 const PHOTO_PINCH_SCALE_THRESHOLD = 0.02;
 const PHOTO_ZOOM_ACTIVE_THRESHOLD = 1.001;
@@ -140,6 +151,9 @@ export class App implements OnDestroy {
 
   @ViewChildren('videoElement')
   private videoElements?: QueryList<ElementRef<HTMLVideoElement>>;
+
+  @ViewChild('galleryViewport')
+  private galleryViewport?: ElementRef<HTMLElement>;
 
   protected readonly manifest = signal<FrameManifest | null>(null);
   protected readonly provisioning = signal<ProvisioningStatus | null>(null);
@@ -165,6 +179,12 @@ export class App implements OnDestroy {
   protected readonly galleryOperation = signal<GalleryOperation | null>(null);
   protected readonly gallerySelectionMode = signal(false);
   protected readonly gallerySelectedIds = signal<ReadonlySet<string>>(new Set());
+  protected readonly galleryGeometry = signal<GalleryGeometry>({
+    columns: 6,
+    rowStep: 218,
+    viewportHeight: 540,
+  });
+  protected readonly galleryFirstVisibleRow = signal(0);
   protected readonly galleryBatchConfirming = signal(false);
   protected readonly galleryBatchSaving = signal(false);
   protected readonly galleryBatchError = signal<string | null>(null);
@@ -208,6 +228,22 @@ export class App implements OnDestroy {
     const items = this.galleryItems();
     const selected = this.gallerySelectedIds();
     return items.length > 0 && items.every((item) => selected.has(item.id));
+  });
+  protected readonly galleryVirtualView = computed(() => {
+    const items = this.galleryItems();
+    const geometry = this.galleryGeometry();
+    const totalRows = Math.ceil(items.length / geometry.columns);
+    const visibleRows = Math.max(1, Math.ceil(geometry.viewportHeight / geometry.rowStep));
+    const firstVisibleRow = Math.min(this.galleryFirstVisibleRow(), Math.max(0, totalRows - 1));
+    const startRow = Math.max(0, firstVisibleRow - GALLERY_OVERSCAN_ROWS);
+    const endRow = Math.min(totalRows, firstVisibleRow + visibleRows + GALLERY_OVERSCAN_ROWS + 1);
+    return {
+      items: items.slice(startRow * geometry.columns, endRow * geometry.columns),
+      columns: geometry.columns,
+      offset: startRow * geometry.rowStep,
+      height: Math.max(0, totalRows * geometry.rowStep - GALLERY_GAP_PX),
+      cardHeight: geometry.rowStep - GALLERY_GAP_PX,
+    };
   });
   protected readonly storageSummary = computed(() => {
     const photoItems = this.media().filter((item) => item.kind === 'photo');
@@ -645,6 +681,19 @@ export class App implements OnDestroy {
     this.closeGalleryOptions();
     this.cancelGallerySelection();
     this.openOverlay('gallery');
+    this.resetGalleryViewport();
+  }
+
+  protected setGalleryFilter(filter: GalleryFilter): void {
+    if (this.galleryFilter() === filter) return;
+    this.galleryFilter.set(filter);
+    this.resetGalleryViewport();
+  }
+
+  protected setGalleryOrder(order: GalleryOrder): void {
+    if (this.galleryOrder() === order) return;
+    this.galleryOrder.set(order);
+    this.resetGalleryViewport();
   }
 
   protected beginGallerySelection(): void {
@@ -832,6 +881,7 @@ export class App implements OnDestroy {
     }
 
     const target = event.currentTarget as HTMLElement;
+    this.updateGalleryGeometry(target);
     this.clearGalleryClickReset();
     this.suppressGalleryClick = false;
     this.galleryLastDragAt = 0;
@@ -877,6 +927,18 @@ export class App implements OnDestroy {
   protected onGalleryPointerCancel(event: PointerEvent): void {
     event.stopPropagation();
     this.finishGalleryDrag(event, false);
+  }
+
+  protected onGalleryScroll(event: Event): void {
+    const viewport = event.currentTarget as HTMLElement;
+    this.updateGalleryGeometry(viewport);
+    const firstVisibleRow = Math.max(
+      0,
+      Math.floor(viewport.scrollTop / this.galleryGeometry().rowStep),
+    );
+    if (firstVisibleRow !== this.galleryFirstVisibleRow()) {
+      this.galleryFirstVisibleRow.set(firstVisibleRow);
+    }
   }
 
   protected openNotifications(): void {
@@ -1218,6 +1280,11 @@ export class App implements OnDestroy {
     return `${(megabytes / 1024).toFixed(2)} GB`;
   }
 
+  protected formatStoragePercent(percent: number): string {
+    if (!Number.isFinite(percent) || percent <= 0) return '0 %';
+    return `${percent < 1 ? percent.toFixed(1) : Math.round(percent)} %`;
+  }
+
   private numericBytes(bytes: number | null | undefined): number {
     const value = Number(bytes ?? 0);
     return Number.isFinite(value) && value > 0 ? value : 0;
@@ -1440,9 +1507,13 @@ export class App implements OnDestroy {
   }
 
   private receiveManifest(next: FrameManifest): void {
-    const orderedNext = this.orderManifest(next);
     this.loading.set(false);
     this.connectionWarning.set(null);
+    const current = this.manifest();
+    if (current?.version === next.version || this.pendingManifest()?.version === next.version) {
+      return;
+    }
+    const orderedNext = this.orderManifest(next);
     const pendingOperation = this.galleryOperation();
     if (pendingOperation) {
       const operatedItem = orderedNext.media.find((item) => item.id === pendingOperation.mediaId);
@@ -1454,7 +1525,6 @@ export class App implements OnDestroy {
         this.galleryOperation.set(null);
       }
     }
-    const current = this.manifest();
     if (!current || current.media.length === 0) {
       this.resetPhotoTransform();
       this.manifest.set(orderedNext);
@@ -1496,13 +1566,44 @@ export class App implements OnDestroy {
       }
       return;
     }
-    if (
-      current.version === orderedNext.version ||
-      this.pendingManifest()?.version === orderedNext.version
-    ) {
-      return;
-    }
     this.pendingManifest.set(orderedNext);
+  }
+
+  private resetGalleryViewport(): void {
+    this.galleryFirstVisibleRow.set(0);
+    window.requestAnimationFrame(() => {
+      const viewport = this.galleryViewport?.nativeElement;
+      if (!viewport) return;
+      viewport.scrollTop = 0;
+      this.updateGalleryGeometry(viewport);
+    });
+  }
+
+  private updateGalleryGeometry(viewport: HTMLElement): void {
+    if (viewport.clientWidth <= 0 || viewport.clientHeight <= 0) return;
+    const availableWidth = Math.max(
+      GALLERY_MIN_CARD_WIDTH_PX,
+      viewport.clientWidth - GALLERY_HORIZONTAL_PADDING_PX,
+    );
+    const columns = Math.max(
+      1,
+      Math.floor((availableWidth + GALLERY_GAP_PX) / (GALLERY_MIN_CARD_WIDTH_PX + GALLERY_GAP_PX)),
+    );
+    const cardWidth = (availableWidth - Math.max(0, columns - 1) * GALLERY_GAP_PX) / columns;
+    const cardHeight = cardWidth * 0.75 + GALLERY_CARD_CAPTION_HEIGHT_PX;
+    const next: GalleryGeometry = {
+      columns,
+      rowStep: cardHeight + GALLERY_GAP_PX,
+      viewportHeight: viewport.clientHeight,
+    };
+    const current = this.galleryGeometry();
+    if (
+      current.columns !== next.columns ||
+      Math.abs(current.rowStep - next.rowStep) > 0.5 ||
+      Math.abs(current.viewportHeight - next.viewportHeight) > 0.5
+    ) {
+      this.galleryGeometry.set(next);
+    }
   }
 
   private navigate(direction: -1 | 1): void {

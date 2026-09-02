@@ -237,7 +237,9 @@
               {{
                 unreadNotifications() === 0
                   ? 'Sin avisos nuevos'
-                  : unreadNotifications() + ' aviso' + (unreadNotifications() === 1 ? '' : 's') +
+                  : unreadNotifications() +
+                    ' aviso' +
+                    (unreadNotifications() === 1 ? '' : 's') +
                     ' sin leer'
               }}
             </small>
@@ -279,34 +281,38 @@
           <button
             type="button"
             [class.is-active]="galleryFilter() === 'all'"
-            (click)="galleryFilter.set('all')"
+            (click)="setGalleryFilter('all')"
           >
             Todos
           </button>
           <button
             type="button"
             [class.is-active]="galleryFilter() === 'photo'"
-            (click)="galleryFilter.set('photo')"
+            (click)="setGalleryFilter('photo')"
           >
             Fotos
           </button>
           <button
             type="button"
             [class.is-active]="galleryFilter() === 'video'"
-            (click)="galleryFilter.set('video')"
+            (click)="setGalleryFilter('video')"
           >
             Videos
           </button>
         </div>
         <label>
           <span>Orden</span>
-          <select [value]="galleryOrder()" (change)="galleryOrder.set($any($event.target).value)">
+          <select [value]="galleryOrder()" (change)="setGalleryOrder($any($event.target).value)">
             <option value="newest">Más recientes</option>
             <option value="oldest">Más antiguos</option>
           </select>
         </label>
         @if (gallerySelectionMode()) {
-          <button class="button button--ghost" type="button" (click)="toggleAllVisibleGalleryItems()">
+          <button
+            class="button button--ghost"
+            type="button"
+            (click)="toggleAllVisibleGalleryItems()"
+          >
             {{ galleryAllVisibleSelected() ? 'Deseleccionar visibles' : 'Seleccionar visibles' }}
           </button>
           <output>{{ gallerySelectedCount() }} seleccionados</output>
@@ -330,74 +336,88 @@
       </div>
 
       <div
+        #galleryViewport
         class="gallery-grid"
         [class.gallery-grid--dragging]="galleryDragging()"
+        (scroll)="onGalleryScroll($event)"
         (pointerdown)="onGalleryPointerDown($event)"
         (pointermove)="onGalleryPointerMove($event)"
         (pointerup)="onGalleryPointerUp($event)"
         (pointercancel)="onGalleryPointerCancel($event)"
         (pointerleave)="onGalleryPointerCancel($event)"
       >
-        @for (item of galleryItems(); track item.id) {
-          <article
-            class="gallery-card"
-            [class.gallery-card--selected]="gallerySelectedIds().has(item.id)"
-          >
-            <button
-              class="gallery-card__open"
-              type="button"
-              (click)="showGalleryItem(item.id, $event)"
+        @if (galleryItems().length > 0) {
+          <div class="gallery-virtual-space" [style.height.px]="galleryVirtualView().height">
+            <div
+              class="gallery-virtual-items"
+              [style.--gallery-columns]="galleryVirtualView().columns"
+              [style.--gallery-card-height.px]="galleryVirtualView().cardHeight"
+              [style.transform]="'translate3d(0,' + galleryVirtualView().offset + 'px,0)'"
             >
-              <span class="gallery-card__preview">
-                @if (gallerySelectionMode()) {
-                  <span class="gallery-card__check" aria-hidden="true">
-                    {{ gallerySelectedIds().has(item.id) ? '✓' : '' }}
-                  </span>
-                }
-                @if (item.kind === 'photo' || item.posterUrl || item.thumbnailUrl) {
-                  <img
-                    [src]="galleryPreviewUrl(item)"
-                    [attr.data-fallback-src]="galleryPreviewFallback(item)"
-                    [alt]="item.caption || (item.kind === 'photo' ? 'Fotografía' : 'Video')"
-                    loading="lazy"
-                    decoding="async"
-                    draggable="false"
-                    (error)="onGalleryPreviewError($event)"
-                  />
-                } @else {
-                  <span class="gallery-card__empty">Video</span>
-                }
-                @if (item.kind === 'video') {
-                  <span class="gallery-card__video"
-                    >▶ {{ formatVideoTime(item.durationSeconds || 0) }}</span
-                  >
-                }
-              </span>
-              <span class="gallery-card__caption">
-                <strong>{{
-                  item.caption || (item.kind === 'photo' ? 'Fotografía' : 'Video')
-                }}</strong>
-                <small
-                  >{{ item.kind === 'photo' ? 'Foto' : 'Video' }} ·
-                  {{ formatBytes(item.sizeBytes) }}</small
+              @for (item of galleryVirtualView().items; track item.id) {
+                <article
+                  class="gallery-card"
+                  [class.gallery-card--selected]="gallerySelectedIds().has(item.id)"
                 >
-              </span>
-            </button>
-            @if (!gallerySelectionMode()) {
-              <button
-              class="gallery-card__options"
-              type="button"
-              (pointerdown)="$event.stopPropagation()"
-              (click)="openGalleryOptions(item, $event)"
-              [attr.aria-label]="
-                'Opciones de ' + (item.caption || (item.kind === 'photo' ? 'fotografía' : 'video'))
-              "
-              >
-                ⋮
-              </button>
-            }
-          </article>
-        } @empty {
+                  <button
+                    class="gallery-card__open"
+                    type="button"
+                    (click)="showGalleryItem(item.id, $event)"
+                  >
+                    <span class="gallery-card__preview">
+                      @if (gallerySelectionMode()) {
+                        <span class="gallery-card__check" aria-hidden="true">
+                          {{ gallerySelectedIds().has(item.id) ? '✓' : '' }}
+                        </span>
+                      }
+                      @if (item.kind === 'photo' || item.posterUrl || item.thumbnailUrl) {
+                        <img
+                          [src]="galleryPreviewUrl(item)"
+                          [attr.data-fallback-src]="galleryPreviewFallback(item)"
+                          [alt]="item.caption || (item.kind === 'photo' ? 'Fotografía' : 'Video')"
+                          loading="lazy"
+                          decoding="async"
+                          draggable="false"
+                          (error)="onGalleryPreviewError($event)"
+                        />
+                      } @else {
+                        <span class="gallery-card__empty">Video</span>
+                      }
+                      @if (item.kind === 'video') {
+                        <span class="gallery-card__video"
+                          >▶ {{ formatVideoTime(item.durationSeconds || 0) }}</span
+                        >
+                      }
+                    </span>
+                    <span class="gallery-card__caption">
+                      <strong>{{
+                        item.caption || (item.kind === 'photo' ? 'Fotografía' : 'Video')
+                      }}</strong>
+                      <small
+                        >{{ item.kind === 'photo' ? 'Foto' : 'Video' }} ·
+                        {{ formatBytes(item.sizeBytes) }}</small
+                      >
+                    </span>
+                  </button>
+                  @if (!gallerySelectionMode()) {
+                    <button
+                      class="gallery-card__options"
+                      type="button"
+                      (pointerdown)="$event.stopPropagation()"
+                      (click)="openGalleryOptions(item, $event)"
+                      [attr.aria-label]="
+                        'Opciones de ' +
+                        (item.caption || (item.kind === 'photo' ? 'fotografía' : 'video'))
+                      "
+                    >
+                      ⋮
+                    </button>
+                  }
+                </article>
+              }
+            </div>
+          </div>
+        } @else {
           <div class="gallery-empty">No hay medios para este filtro.</div>
         }
       </div>
@@ -821,17 +841,52 @@
                     <small>{{ formatBytes(storageCapacity().available) }} disponibles</small>
                   </div>
                   <div class="storage-capacity__bar" aria-hidden="true">
-                    <span class="is-photos" [style.width.%]="storageCapacity().photoPercent"></span>
-                    <span class="is-videos" [style.width.%]="storageCapacity().videoPercent"></span>
-                    <span class="is-other" [style.width.%]="storageCapacity().otherPercent"></span>
-                    <span class="is-available" [style.width.%]="storageCapacity().availablePercent"></span>
-                    <span class="is-reserved" [style.width.%]="storageCapacity().reservedPercent"></span>
+                    @if (storageCapacity().photoPercent > 0) {
+                      <span
+                        class="is-photos"
+                        [style.width.%]="storageCapacity().photoPercent"
+                      ></span>
+                    }
+                    @if (storageCapacity().videoPercent > 0) {
+                      <span
+                        class="is-videos"
+                        [style.width.%]="storageCapacity().videoPercent"
+                      ></span>
+                    }
+                    @if (storageCapacity().otherPercent > 0) {
+                      <span
+                        class="is-other"
+                        [style.width.%]="storageCapacity().otherPercent"
+                      ></span>
+                    }
+                    @if (storageCapacity().availablePercent > 0) {
+                      <span
+                        class="is-available"
+                        [style.width.%]="storageCapacity().availablePercent"
+                      ></span>
+                    }
+                    @if (storageCapacity().reservedPercent > 0) {
+                      <span
+                        class="is-reserved"
+                        [style.width.%]="storageCapacity().reservedPercent"
+                      ></span>
+                    }
                   </div>
                   <div class="storage-capacity__legend">
-                    <span class="is-photos">Fotos</span>
-                    <span class="is-videos">Videos</span>
-                    <span class="is-other">Sistema y otros</span>
-                    <span class="is-available">Disponible</span>
+                    <span class="is-photos"
+                      >Fotos · {{ formatStoragePercent(storageCapacity().photoPercent) }}</span
+                    >
+                    <span class="is-videos"
+                      >Videos · {{ formatStoragePercent(storageCapacity().videoPercent) }}</span
+                    >
+                    <span class="is-other"
+                      >Sistema y otros ·
+                      {{ formatStoragePercent(storageCapacity().otherPercent) }}</span
+                    >
+                    <span class="is-available"
+                      >Disponible ·
+                      {{ formatStoragePercent(storageCapacity().availablePercent) }}</span
+                    >
                   </div>
                 </section>
               }
@@ -848,7 +903,10 @@
                 <article>
                   <strong>{{ formatBytes(storageSummary().totalBytes) }}</strong
                   ><span>Total de medios</span
-                  ><small>{{ formatBytes(storageCapacity().frameData) }} en toda la data de Naiskos</small>
+                  ><small
+                    >{{ formatBytes(storageCapacity().frameData) }} en toda la data de
+                    Naiskos</small
+                  >
                 </article>
               </div>
             }

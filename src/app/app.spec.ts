@@ -103,9 +103,7 @@ const rotateMediaMock = vi.fn((_id: string, rotationDegrees: number) =>
   of({ accepted: true, rotationDegrees }),
 );
 const deleteMediaMock = vi.fn(() => of({ accepted: true }));
-const deleteMediaBatchMock = vi.fn((ids: string[]) =>
-  of({ accepted: true, count: ids.length }),
-);
+const deleteMediaBatchMock = vi.fn((ids: string[]) => of({ accepted: true, count: ids.length }));
 const markAllNotificationsReadMock = vi.fn(() => of({ updated: 1 }));
 const dismissNotificationMock = vi.fn(() => of(undefined));
 
@@ -460,6 +458,43 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('virtualiza una galería grande y conserva estable un manifiesto sin cambios', async () => {
+    vi.useFakeTimers();
+    servedManifest = {
+      ...manifest,
+      version: 2,
+      media: Array.from({ length: 1_200 }, (_, index) => ({
+        ...photo,
+        id: `photo-${index}`,
+        url: `/media/photo-${index}`,
+        receivedAt: new Date(Date.UTC(2026, 7, 8, 12, 0, index)).toISOString(),
+      })),
+    };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const component = fixture.componentInstance as unknown as {
+      openGallery(): void;
+      manifest(): FrameManifest | null;
+    };
+    component.openGallery();
+    fixture.detectChanges();
+    const firstManifest = component.manifest();
+    const compiled = fixture.nativeElement as HTMLElement;
+    const renderedCards = compiled.querySelectorAll('.gallery-card').length;
+
+    expect(compiled.textContent).toContain('1200 resultados');
+    expect(renderedCards).toBeGreaterThan(0);
+    expect(renderedCards).toBeLessThan(100);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    fixture.detectChanges();
+    expect(component.manifest()).toBe(firstManifest);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('muestra metadatos numéricos legados y suma los pósteres en almacenamiento', async () => {
     vi.useFakeTimers();
     servedManifest = {
@@ -552,12 +587,14 @@ describe('App', () => {
     expect(previews[0]?.getAttribute('src')).toBe('/media/photo-1-thumb.webp');
     expect(previews[1]?.getAttribute('src')).toBe('/media/video-1-thumb.webp');
 
-    (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>(
-      '.gallery-card__open',
-    )?.click();
+    (fixture.nativeElement as HTMLElement)
+      .querySelector<HTMLButtonElement>('.gallery-card__open')
+      ?.click();
     fixture.detectChanges();
     expect(
-      (fixture.nativeElement as HTMLElement).querySelector('.stage--stable img')?.getAttribute('src'),
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--stable img')
+        ?.getAttribute('src'),
     ).toBe(photo.url);
     fixture.destroy();
     vi.useRealTimers();

@@ -639,12 +639,7 @@ select {
 }
 
 .gallery-grid {
-  display: grid;
   flex: 1 1 auto;
-  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
-  grid-auto-rows: max-content;
-  align-content: start;
-  gap: 14px;
   min-height: 0;
   padding: 18px 24px 30px;
   overflow: auto;
@@ -654,12 +649,30 @@ select {
   overscroll-behavior: contain;
 }
 
+.gallery-virtual-space {
+  position: relative;
+  width: 100%;
+}
+
+.gallery-virtual-items {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--gallery-columns, 6), minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+  will-change: transform;
+}
+
 .gallery-grid--dragging {
   cursor: grabbing;
 }
 
 .gallery-card {
   position: relative;
+  height: var(--gallery-card-height, 204px);
   content-visibility: auto;
   contain-intrinsic-size: auto 220px;
   min-width: 0;
@@ -740,7 +753,7 @@ select {
 .gallery-card__preview {
   position: relative;
   display: block;
-  aspect-ratio: 4 / 3;
+  height: calc(var(--gallery-card-height, 204px) - 58px);
   overflow: hidden;
   background: #050505;
 }
@@ -938,6 +951,7 @@ select {
   min-width: 0;
   flex-direction: column;
   gap: 4px;
+  height: 58px;
   padding: 10px 11px 12px;
 }
 
@@ -1059,7 +1073,7 @@ select {
 
 .storage-capacity__bar {
   display: flex;
-  height: 18px;
+  height: 24px;
   margin: 15px 0 12px;
   overflow: hidden;
   border-radius: 999px;
@@ -1067,31 +1081,33 @@ select {
 }
 
 .storage-capacity__bar span {
-  min-width: 0;
+  min-width: 3px;
+  box-shadow: inset -2px 0 #111114;
 }
 
 .storage-capacity__bar .is-photos,
 .storage-capacity__legend .is-photos::before {
-  background: #d6b276;
+  background: #ffb000;
 }
 
 .storage-capacity__bar .is-videos,
 .storage-capacity__legend .is-videos::before {
-  background: #7ca7d6;
+  background: #00c8ff;
 }
 
 .storage-capacity__bar .is-other,
 .storage-capacity__legend .is-other::before {
-  background: #77727e;
+  background: #a66cff;
 }
 
 .storage-capacity__bar .is-available,
 .storage-capacity__legend .is-available::before {
-  background: #4f8f68;
+  background: #32c878;
 }
 
 .storage-capacity__bar .is-reserved {
-  background: #333238;
+  background: #596170;
+  box-shadow: none;
 }
 
 .storage-capacity__legend {

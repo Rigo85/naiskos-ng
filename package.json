@@ -1,6 +1,7 @@
 {
   "name": "naiskos-ng",
   "version": "0.0.0",
+  "description": "Interfaz táctil de Naiskos, un marco digital autogestionado para Raspberry Pi",
   "license": "AGPL-3.0-only",
   "scripts": {
     "ng": "ng",

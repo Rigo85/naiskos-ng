@@ -1,42 +1,107 @@
-# Naiskos Angular
+<p align="center">
+  <img src=".github/assets/naiskos-logo.png" alt="Logo de Naiskos" width="180">
+</p>
 
-Interfaz táctil del marco digital Naiskos, construida con Angular 22 para
-Chromium en modo kiosco. Presenta fotografías y videos, funciona con el último
-estado disponible sin Internet y se comunica exclusivamente con
-`naiskos-agent` por el mismo origen.
+<h1 align="center">Naiskos</h1>
 
-La aplicación no contiene tokens centrales, no descarga directamente desde
-Telegram y no usa el almacenamiento del navegador como repositorio de medios.
+<p align="center">
+  Marco digital privado y autogestionado para Raspberry Pi.
+</p>
 
-## Funciones actuales
+<p align="center">
+  <a href="LICENSE"><img alt="Licencia AGPL-3.0" src="https://img.shields.io/badge/licencia-AGPL--3.0-gold"></a>
+  <img alt="Angular 22" src="https://img.shields.io/badge/Angular-22-DD0031?logo=angular">
+  <img alt="Node.js 24" src="https://img.shields.io/badge/Node.js-24-5FA04E?logo=nodedotjs&logoColor=white">
+  <img alt="Raspberry Pi" src="https://img.shields.io/badge/Raspberry%20Pi-kiosco-A22846?logo=raspberrypi">
+</p>
+
+Naiskos presenta fotografías y videos en una pantalla táctil, recibe contenido
+mediante Telegram y conserva localmente la última colección válida para seguir
+funcionando sin Internet. El servidor central normaliza los medios; un agente
+instalado en la Raspberry Pi los sincroniza y sirve la interfaz únicamente por
+loopback.
+
+> Este repositorio contiene la interfaz Angular y es la portada pública del
+> proyecto. El agente del marco y el servicio central viven en repositorios
+> independientes.
+
+## Estado del proyecto
+
+Naiskos está en desarrollo activo y cuenta con un piloto funcional sobre
+hardware real. La presentación, la entrega por Telegram, el procesamiento
+multimedia, el trabajo offline, la telemetría y las actualizaciones firmadas ya
+forman parte del recorrido probado. Todavía no se ofrece como una imagen de
+sistema lista para instalar ni como un producto comercial.
+
+## Funciones principales
 
 - Presentación automática de fotografías y reproducción completa de videos.
-- Crossfade, orden configurable y encuadre global o individual
-  `contain`/`cover`.
-- Navegación por tap/clic, doble tap, deslizamiento horizontal y menú mediante
-  deslizamiento descendente.
-- Zoom fotográfico volátil de 1× a 4× mediante pellizco y desplazamiento de la
-  imagen ampliada.
-- Controles permanentes de reproducción, posición, volumen y mute para videos.
-- Reloj, fecha y clima opcionales.
-- Galería táctil con arrastre, miniaturas dedicadas con fallback, pintura
-  diferida fuera de pantalla, métricas de almacenamiento, rotación y
+- Crossfade y encuadre global o individual con `contain`, `cover` e `inherit`.
+- Navegación táctil por tap, doble tap, arrastre y deslizamiento horizontal.
+- Zoom fotográfico volátil de 1× a 4× mediante pellizco y desplazamiento.
+- Controles de reproducción, posición, volumen y mute para videos.
+- Galería táctil optimizada con miniaturas, selección múltiple, rotación y
   eliminación.
-- Configuración local, estado de alta, QR de vinculación, campana con contador,
-  centro de notificaciones, salida del kiosco y apagado del equipo.
+- Reloj, fecha, clima, métricas de almacenamiento y centro de notificaciones.
+- Funcionamiento offline con activación atómica de colecciones completas.
+- Configuración persistente que no se sobrescribe al recibir un manifiesto.
+- Alta y vinculación mediante QR, salida del kiosco y apagado controlado.
 
-Las preferencias se guardan mediante el agente. Cambiar el manifiesto
-multimedia no debe sobrescribir duración, transición, encuadre, orden, volumen,
-mute ni visibilidad de metadatos.
+## Cómo funciona
 
-## Requisitos
+```mermaid
+flowchart LR
+    T[Telegram] --> S[Naiskos Server]
+    S -->|Medios procesados y manifiestos| A[Naiskos Agent]
+    A -->|Mismo origen local| N[Naiskos Angular]
+    N --> P[Pantalla táctil]
+    A -->|Telemetría y resultados| S
+```
+
+El navegador nunca se conecta directamente a Telegram ni al servicio central.
+Tampoco usa la caché del navegador como repositorio multimedia: todo el estado
+operativo y los archivos pertenecen al agente local.
+
+## Repositorios
+
+| Repositorio | Responsabilidad |
+| --- | --- |
+| **[`naiskos-ng`](https://github.com/Rigo85/naiskos-ng)** | Interfaz Angular táctil ejecutada en Chromium en modo kiosco. |
+| [`naiskos-agent`](https://github.com/Rigo85/naiskos-agent) | Servicio local: contenido offline, sincronización, configuración, telemetría y control del equipo. |
+| [`naiskos-server`](https://github.com/Rigo85/naiskos-server) | API central, bot de Telegram, procesamiento multimedia, manifiestos, notificaciones y actualizaciones. |
+
+El aprovisionamiento reproducible del sistema se mantiene separado de estos
+componentes. Los secretos, inventarios productivos y detalles de
+infraestructura no forman parte de los repositorios públicos.
+
+## Plataforma de referencia
+
+- Raspberry Pi 4 Model B con 2 GB de RAM.
+- Raspberry Pi OS Desktop de 64 bits basado en Debian 13.
+- Pantalla táctil SunFounder de 10,1 pulgadas en horizontal, 1280×800.
+- Chromium en modo kiosco sobre Wayland/labwc.
+- Node.js 24 y npm 11.
+
+El diseño separa la interfaz, el agente y el perfil físico para permitir otros
+equipos en el futuro sin asumir que todos los marcos tienen el mismo hardware.
+
+## Este repositorio
+
+`naiskos-ng` contiene la experiencia visual del marco. Está construido con
+Angular 22 y se comunica exclusivamente con `naiskos-agent` mediante rutas
+relativas del mismo origen.
+
+La aplicación no contiene tokens centrales, no descarga directamente desde
+Telegram y no expone las credenciales del dispositivo al navegador.
+
+### Requisitos
 
 - Node.js 24.
 - npm 11.
-- Para una experiencia completa, `naiskos-agent` en
+- Para la experiencia completa, `naiskos-agent` en
   `http://127.0.0.1:8080`.
 
-## Instalación y comprobación
+### Instalación y comprobación
 
 ```bash
 npm ci
@@ -48,16 +113,14 @@ El artefacto de producción queda en `dist/naiskos-ng/browser/` y utiliza
 nombres con hash. Las fuentes Manrope necesarias para el reloj y el clima se
 incluyen localmente junto con su licencia; el visor no depende de una CDN.
 
-Comandos:
-
 | Comando | Función |
 | --- | --- |
-| `npm start` | Servidor Angular con proxy local hacia el agente |
-| `npm run build` | Compilado optimizado de producción |
-| `npm run watch` | Compilado de desarrollo en observación |
-| `npm test -- --watch=false` | Pruebas unitarias en una sola ejecución |
+| `npm start` | Servidor Angular con proxy local hacia el agente. |
+| `npm run build` | Compilado optimizado de producción. |
+| `npm run watch` | Compilado de desarrollo en observación. |
+| `npm test -- --watch=false` | Pruebas unitarias en una sola ejecución. |
 
-## Desarrollo con el agente
+### Desarrollo con el agente
 
 En una primera terminal:
 
@@ -99,7 +162,7 @@ Después abre `http://127.0.0.1:8080/`.
 - `src/app/core/agent-api.ts`: único acceso HTTP; todas las rutas son relativas.
 - `pointer-gestures.ts`: clasificación de tap, swipe y gesto descendente.
 - `photo-zoom.ts`: matemáticas puras del pellizco y desplazamiento acotado.
-- `slideshow-policy.ts`: tiempos y avance de fotografías/videos.
+- `slideshow-policy.ts`: tiempos y avance de fotografías y videos.
 - `media-readiness.ts`: precarga y disponibilidad antes del crossfade.
 - `app.ts`, `app.html` y `app.scss`: estado y presentación del kiosco.
 
@@ -117,7 +180,7 @@ gestos, zoom y acciones administrativas.
 - salida de Naiskos y apagado del equipo.
 
 Los archivos se cargan desde `/media`. En producción, Angular y estos endpoints
-deben ser servidos por el mismo agente en loopback; no se requiere CORS.
+son servidos por el mismo agente en loopback; no se requiere CORS.
 
 ## Despliegue en el marco
 
@@ -137,10 +200,10 @@ puede reconstruir correctamente el pellizco.
 
 ## Seguridad y privacidad
 
-- No añadas `.env`, tokens, claves, manifiestos reales ni medios a este repo.
+- No añadas `.env`, tokens, claves, manifiestos reales ni medios al repositorio.
 - No conviertas URLs del servicio central en llamadas directas del navegador.
 - El texto de remitente es una preferencia global y no debe revelar más datos
-  que los ya incluidos deliberadamente en el manifiesto local.
+  que los incluidos deliberadamente en el manifiesto local.
 - La salida y el apagado requieren que el agente valide el origen local y que
   el sistema limite la autorización mediante PolicyKit.
 

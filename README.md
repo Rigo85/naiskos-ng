@@ -143,3 +143,9 @@ puede reconstruir correctamente el pellizco.
   que los ya incluidos deliberadamente en el manifiesto local.
 - La salida y el apagado requieren que el agente valide el origen local y que
   el sistema limite la autorización mediante PolicyKit.
+
+## Licencia
+
+Naiskos Angular se distribuye bajo la
+[GNU Affero General Public License v3.0](LICENSE), exclusivamente en su versión
+3 (`AGPL-3.0-only`).

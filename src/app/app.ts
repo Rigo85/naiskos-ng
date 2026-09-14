@@ -131,6 +131,7 @@ type PhotoGestureState = PinchGestureState | PanGestureState;
 const VIDEO_START_TIMEOUT_MS = 10_000;
 const VIDEO_STALL_TIMEOUT_MS = 6_000;
 const VIDEO_PROGRESS_EPSILON_SECONDS = 0.05;
+const VIDEO_END_EPSILON_SECONDS = 0.1;
 const VIDEO_MAX_RECOVERY_ATTEMPTS = 1;
 const VIDEO_QUARANTINE_FAILURES = 2;
 const VIDEO_QUARANTINE_MS = 30 * 60_000;
@@ -1927,7 +1928,15 @@ export class App implements OnDestroy {
   }
 
   private videoReachedEnd(video: HTMLVideoElement): boolean {
-    return video.ended;
+    if (video.ended) return true;
+    const duration = Number(video.duration);
+    const currentTime = Number(video.currentTime);
+    return (
+      Number.isFinite(duration) &&
+      duration > 0 &&
+      Number.isFinite(currentTime) &&
+      currentTime >= Math.max(0, duration - VIDEO_END_EPSILON_SECONDS)
+    );
   }
 
   private beginVideoSession(video: HTMLVideoElement, mediaId: string): void {
@@ -1979,7 +1988,7 @@ export class App implements OnDestroy {
       ) {
         return;
       }
-      if (video.ended) {
+      if (this.videoReachedEnd(video)) {
         this.completeVideo(mediaId);
         return;
       }

@@ -978,6 +978,37 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('reconoce el final efectivo aunque Chromium no emita ended', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [video, photo] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    const element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
+    Object.defineProperty(element, 'duration', { configurable: true, value: 13.941667 });
+    Object.defineProperty(element, 'currentTime', { configurable: true, value: 13.941667 });
+    Object.defineProperty(element, 'ended', { configurable: true, value: false });
+    element.dispatchEvent(new Event('timeupdate'));
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--incoming img')
+        ?.getAttribute('src'),
+    ).toBe(photo.url);
+    expect(reportPlaybackEventMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'viewer.playback.recovery' }),
+    );
+    expect(reportPlaybackEventMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'viewer.playback.skipped' }),
+    );
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('recupera una vez y avanza si Chromium deja de progresar a mitad del video', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [video, secondVideo, photo] };

@@ -132,3 +132,35 @@ export interface AgentHealth {
   mediaDataBytes: number;
   diskUsedPercent: number;
 }
+
+export type ViewerPlaybackState =
+  | 'empty'
+  | 'photo'
+  | 'loading'
+  | 'playing'
+  | 'paused'
+  | 'waiting'
+  | 'recovering'
+  | 'error';
+
+export interface ViewerPlaybackSnapshot {
+  mediaId: string | null;
+  mediaKind: 'photo' | 'video' | null;
+  state: ViewerPlaybackState;
+  currentTime: number;
+  duration: number;
+  readyState: number;
+  networkState: number;
+  paused: boolean;
+  ended: boolean;
+  seeking: boolean;
+  view: 'viewer' | 'overlay';
+}
+
+export interface ViewerPlaybackEvent extends ViewerPlaybackSnapshot {
+  type: 'viewer.playback.recovery' | 'viewer.playback.recovered' | 'viewer.playback.skipped';
+  reason: string;
+  attempt: number;
+  mediaSha256: string | null;
+  mediaErrorCode: number | null;
+}

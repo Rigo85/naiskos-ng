@@ -106,9 +106,11 @@ const deleteMediaMock = vi.fn(() => of({ accepted: true }));
 const deleteMediaBatchMock = vi.fn((ids: string[]) => of({ accepted: true, count: ids.length }));
 const markAllNotificationsReadMock = vi.fn(() => of({ updated: 1 }));
 const dismissNotificationMock = vi.fn(() => of(undefined));
+const reportPlaybackEventMock = vi.fn(() => of({ accepted: true }));
 
 const agentApiMock = {
   getManifest: () => of(servedManifest),
+  getManifestVersion: () => of({ version: servedManifest.version }),
   getHealth: () =>
     of({
       ok: true,
@@ -170,6 +172,8 @@ const agentApiMock = {
   deleteMedia: deleteMediaMock,
   deleteMediaBatch: deleteMediaBatchMock,
   requestSystemAction: () => of({ accepted: true }),
+  reportViewerHeartbeat: () => of(undefined),
+  reportPlaybackEvent: reportPlaybackEventMock,
 };
 
 const mediaReadinessMock = {
@@ -220,6 +224,7 @@ describe('App', () => {
     deleteMediaBatchMock.mockClear();
     markAllNotificationsReadMock.mockClear();
     dismissNotificationMock.mockClear();
+    reportPlaybackEventMock.mockClear();
     await TestBed.configureTestingModule({
       imports: [App],
       providers: [
@@ -973,7 +978,7 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
-  it('avanza si Chromium deja de progresar cerca del final sin emitir ended', async () => {
+  it('recupera una vez y avanza si Chromium deja de progresar a mitad del video', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [video, secondVideo, photo] };
     const fixture = TestBed.createComponent(App);
@@ -994,14 +999,30 @@ describe('App', () => {
 
     element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
     Object.defineProperty(element, 'duration', { configurable: true, value: 45.311 });
-    Object.defineProperty(element, 'currentTime', { configurable: true, value: 44.306 });
+    Object.defineProperty(element, 'currentTime', { configurable: true, value: 9 });
     Object.defineProperty(element, 'paused', { configurable: true, value: false });
+    vi.spyOn(element, 'load').mockImplementation(() => undefined);
     element.dispatchEvent(new Event('timeupdate'));
-    await vi.advanceTimersByTimeAsync(1_504);
+    await vi.advanceTimersByTimeAsync(5_999);
     fixture.detectChanges();
     expect((fixture.nativeElement as HTMLElement).querySelector('.stage--incoming img')).toBeNull();
 
     await vi.advanceTimersByTimeAsync(1);
+    fixture.detectChanges();
+    expect(element.src).toContain('naiskosRetry=');
+    expect(reportPlaybackEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'viewer.playback.recovery',
+        mediaId: secondVideo.id,
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).querySelector('.stage--incoming img')).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
 
     expect(
@@ -1009,6 +1030,66 @@ describe('App', () => {
         .querySelector('.stage--incoming img')
         ?.getAttribute('src'),
     ).toBe(photo.url);
+    expect(reportPlaybackEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'viewer.playback.skipped',
+        mediaId: secondVideo.id,
+      }),
+    );
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('cierra la incidencia cuando el video vuelve a progresar después de recargarlo', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [video, photo] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    const element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
+    let currentTime = 5;
+    Object.defineProperty(element, 'duration', { configurable: true, value: 20 });
+    Object.defineProperty(element, 'currentTime', {
+      configurable: true,
+      get: () => currentTime,
+      set: (value: number) => { currentTime = value; },
+    });
+    Object.defineProperty(element, 'paused', { configurable: true, value: false });
+    vi.spyOn(element, 'load').mockImplementation(() => undefined);
+    element.dispatchEvent(new Event('timeupdate'));
+    await vi.advanceTimersByTimeAsync(6_000);
+
+    currentTime = 5.6;
+    element.dispatchEvent(new Event('timeupdate'));
+
+    expect(reportPlaybackEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'viewer.playback.recovered',
+        mediaId: video.id,
+      }),
+    );
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('reinicia desde cero un video único cuando termina', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [video] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    const element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
+    const play = vi.spyOn(element, 'play').mockResolvedValue();
+    element.currentTime = 10;
+    element.dispatchEvent(new Event('ended'));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(element.currentTime).toBe(0);
+    expect(play).toHaveBeenCalled();
     fixture.destroy();
     vi.useRealTimers();
   });

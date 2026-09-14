@@ -19,7 +19,20 @@ const photo: MediaItem = {
   posterSizeBytes: null,
 };
 
-afterEach(() => vi.unstubAllGlobals());
+const video: MediaItem = {
+  ...photo,
+  id: 'video-ready',
+  kind: 'video',
+  url: '/media/video-ready.mp4',
+  posterUrl: '/media/video-ready.jpg',
+  durationSeconds: 12,
+  posterSizeBytes: 1,
+};
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe('MediaReadiness', () => {
   it('espera la decodificación de una fotografía antes de declararla lista', async () => {
@@ -34,5 +47,26 @@ describe('MediaReadiness', () => {
     await new MediaReadiness().prepare(photo);
 
     expect(decode).toHaveBeenCalledOnce();
+  });
+
+  it('espera datos reproducibles del MP4 y la decodificación de su póster', async () => {
+    const decode = vi.fn(() => Promise.resolve());
+    class ReadyImage {
+      decoding = 'auto';
+      src = '';
+      decode = decode;
+    }
+    vi.stubGlobal('Image', ReadyImage);
+    const element = document.createElement('video');
+    const load = vi.spyOn(element, 'load').mockImplementation(() => {
+      if (element.src) queueMicrotask(() => element.dispatchEvent(new Event('loadeddata')));
+    });
+    vi.spyOn(document, 'createElement').mockReturnValue(element);
+
+    await new MediaReadiness().prepare(video);
+
+    expect(load).toHaveBeenCalled();
+    expect(decode).toHaveBeenCalledOnce();
+    expect(element.hasAttribute('src')).toBe(false);
   });
 });

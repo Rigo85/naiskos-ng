@@ -37,10 +37,16 @@
           autoplay
           playsinline
           preload="auto"
+          (loadstart)="onVideoLoadStart(videoElement, item.id)"
           (loadedmetadata)="onVideoLoaded(videoElement, item.id)"
           (playing)="onVideoPlaying(videoElement, item.id)"
           (pause)="onVideoPause(videoElement, item.id)"
           (timeupdate)="onVideoProgress(videoElement, item.id)"
+          (waiting)="onVideoWaiting(videoElement, item.id, 'waiting')"
+          (stalled)="onVideoWaiting(videoElement, item.id, 'stalled')"
+          (seeking)="onVideoSeeking(videoElement, item.id)"
+          (seeked)="onVideoSeeked(videoElement, item.id)"
+          (error)="onVideoError(videoElement, item.id)"
           (ended)="onVideoEnded(item.id)"
         ></video>
 

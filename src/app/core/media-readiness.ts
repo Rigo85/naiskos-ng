@@ -11,11 +11,10 @@ export class MediaReadiness {
       await this.prepareImage(item.url);
       return;
     }
-    if (item.posterUrl) {
-      await this.prepareImage(item.posterUrl);
-      return;
-    }
-    await this.prepareVideo(item.url);
+    await Promise.all([
+      this.prepareVideo(item.url),
+      item.posterUrl ? this.prepareImage(item.posterUrl) : Promise.resolve(),
+    ]);
   }
 
   private async prepareImage(url: string): Promise<void> {

@@ -27,6 +27,9 @@ import {
   MediaItem,
   MediaRotation,
   ProvisioningStatus,
+  ViewerPlaybackEvent,
+  ViewerPlaybackSnapshot,
+  ViewerPlaybackState,
   WeatherSnapshot,
 } from './core/models';
 import { classifyGesture, GesturePoint } from './core/pointer-gestures';
@@ -125,8 +128,15 @@ interface PanGestureState {
 
 type PhotoGestureState = PinchGestureState | PanGestureState;
 
-const VIDEO_END_WATCHDOG_GRACE_MS = 500;
-const VIDEO_END_STALL_WINDOW_SECONDS = 2;
+const VIDEO_START_TIMEOUT_MS = 10_000;
+const VIDEO_STALL_TIMEOUT_MS = 6_000;
+const VIDEO_PROGRESS_EPSILON_SECONDS = 0.05;
+const VIDEO_MAX_RECOVERY_ATTEMPTS = 1;
+const VIDEO_QUARANTINE_FAILURES = 2;
+const VIDEO_QUARANTINE_MS = 30 * 60_000;
+const VIEWER_HEARTBEAT_INTERVAL_MS = 15_000;
+const NAVIGATION_PREPARATION_BUDGET_MS = 15_000;
+const NAVIGATION_MAX_CANDIDATES = 24;
 const GALLERY_DRAG_THRESHOLD_PX = 8;
 const GALLERY_SYNTHETIC_CLICK_WINDOW_MS = 250;
 const GALLERY_MIN_CARD_WIDTH_PX = 178;
@@ -189,6 +199,7 @@ export class App implements OnDestroy {
   protected readonly galleryBatchError = signal<string | null>(null);
   protected readonly now = signal(new Date());
   protected readonly videoPaused = signal(false);
+  protected readonly videoPlaybackState = signal<ViewerPlaybackState>('empty');
   protected readonly videoCurrentTime = signal(0);
   protected readonly videoDuration = signal(0);
   protected readonly systemActionPending = signal<SystemAction | null>(null);
@@ -380,8 +391,17 @@ export class App implements OnDestroy {
   private photoTimer: number | undefined;
   private photoTimerGeneration = 0;
   private crossfadeTimer: number | undefined;
-  private videoEndWatchdogTimer: number | undefined;
+  private videoWatchdogTimer: number | undefined;
   private pausedVideoAdvanceTimer: number | undefined;
+  private videoSessionGeneration = 0;
+  private videoSessionMediaId: string | null = null;
+  private videoSessionElement: HTMLVideoElement | null = null;
+  private videoLastProgressAt = 0;
+  private videoLastObservedTime = 0;
+  private videoRecoveryAttempts = 0;
+  private videoRecoveryResumeAt: number | null = null;
+  private readonly videoFailureCounts = new Map<string, number>();
+  private readonly quarantinedVideos = new Map<string, number>();
   private navigationGeneration = 0;
   private lastTapAt = 0;
   private lastTapSide: 'left' | 'right' | null = null;
@@ -394,8 +414,20 @@ export class App implements OnDestroy {
     this.subscriptions.add(
       timer(0, 2_000)
         .pipe(
-          switchMap(() =>
-            this.agent.getManifest().pipe(
+          switchMap(() => {
+            const installed = this.manifest();
+            const knownVersion = Math.max(
+              installed?.version ?? -1,
+              this.pendingManifest()?.version ?? -1,
+            );
+            const request = installed
+              ? this.agent.getManifestVersion().pipe(
+                  switchMap(({ version }) =>
+                    version === knownVersion ? of(null) : this.agent.getManifest(),
+                  ),
+                )
+              : this.agent.getManifest();
+            return request.pipe(
               catchError((error: HttpErrorResponse) => {
                 this.loading.set(false);
                 this.connectionWarning.set(
@@ -405,8 +437,8 @@ export class App implements OnDestroy {
                 );
                 return of(null);
               }),
-            ),
-          ),
+            );
+          }),
         )
         .subscribe((manifest) => {
           if (manifest) {
@@ -428,6 +460,17 @@ export class App implements OnDestroy {
         .subscribe((status) => {
           if (status) this.provisioning.set(status);
         }),
+    );
+    this.subscriptions.add(
+      timer(0, VIEWER_HEARTBEAT_INTERVAL_MS)
+        .pipe(
+          switchMap(() =>
+            this.agent.reportViewerHeartbeat(this.viewerPlaybackSnapshot()).pipe(
+              catchError(() => of(null)),
+            ),
+          ),
+        )
+        .subscribe(),
     );
     this.subscriptions.add(
       timer(0, 30_000)
@@ -461,7 +504,7 @@ export class App implements OnDestroy {
     this.subscriptions.unsubscribe();
     this.clearPhotoTimer();
     this.clearCrossfadeTimer();
-    this.clearVideoEndWatchdog();
+    this.clearVideoMonitoring();
     this.clearPausedVideoAdvance();
     this.clearGalleryClickReset();
     this.clearViewerPointers();
@@ -1112,6 +1155,15 @@ export class App implements OnDestroy {
     });
   }
 
+  protected onVideoLoadStart(video: HTMLVideoElement, mediaId: string): void {
+    if (!this.isCurrentStableVideo(video, mediaId)) {
+      return;
+    }
+    this.beginVideoSession(video, mediaId);
+    this.videoPlaybackState.set(this.videoRecoveryAttempts > 0 ? 'recovering' : 'loading');
+    this.armVideoWatchdog(video, mediaId, VIDEO_START_TIMEOUT_MS, 'startup-timeout');
+  }
+
   protected onVideoLoaded(video: HTMLVideoElement, mediaId: string): void {
     video.volume = this.settings().volume;
     video.muted = this.settings().muted;
@@ -1127,15 +1179,21 @@ export class App implements OnDestroy {
       video.pause();
       return;
     }
+    this.beginVideoSession(video, mediaId);
+    this.noteVideoProgress(video, true);
+    this.videoPlaybackState.set(this.videoRecoveryAttempts > 0 ? 'recovering' : 'loading');
     this.videoPaused.set(false);
     this.clearPausedVideoAdvance();
-    void video.play().catch(() => {
-      this.videoPaused.set(true);
-      this.schedulePausedVideoAdvance(mediaId);
-    });
+    this.attemptVideoPlay(video, mediaId);
   }
 
   protected onVideoEnded(mediaId: string): void {
+    const video = this.currentVideoElement();
+    if (video && this.videoRecoveryAttempts > 0) {
+      this.markVideoRecoverySucceeded(video, mediaId);
+    } else {
+      this.markVideoHealthy(mediaId);
+    }
     this.completeVideo(mediaId);
   }
 
@@ -1143,8 +1201,11 @@ export class App implements OnDestroy {
     if (this.currentMedia()?.id === mediaId && !this.crossfade() && !this.overlayOpen()) {
       this.clearPausedVideoAdvance();
       this.videoPaused.set(false);
+      this.videoPlaybackState.set('playing');
       this.updateVideoProgress(video);
-      this.armVideoEndWatchdog(video, mediaId);
+      this.beginVideoSession(video, mediaId);
+      this.noteVideoProgress(video);
+      this.armVideoWatchdog(video, mediaId);
     }
   }
 
@@ -1152,12 +1213,18 @@ export class App implements OnDestroy {
     if (this.currentMedia()?.id !== mediaId || this.preparingTransition() || this.crossfade()) {
       return;
     }
-    this.clearVideoEndWatchdog();
+    this.clearVideoWatchdog();
     this.updateVideoProgress(video);
     if (this.videoReachedEnd(video)) {
       this.completeVideo(mediaId);
+    } else if (
+      this.videoPlaybackState() === 'recovering' ||
+      this.videoPlaybackState() === 'loading'
+    ) {
+      return;
     } else {
       this.videoPaused.set(true);
+      this.videoPlaybackState.set('paused');
       if (!this.overlayOpen()) {
         this.schedulePausedVideoAdvance(mediaId);
       }
@@ -1167,6 +1234,14 @@ export class App implements OnDestroy {
   protected onVideoProgress(video: HTMLVideoElement, mediaId: string): void {
     if (this.currentMedia()?.id === mediaId && !this.crossfade()) {
       this.updateVideoProgress(video);
+      this.noteVideoProgress(video);
+      if (
+        this.videoRecoveryAttempts > 0 &&
+        this.videoRecoveryResumeAt !== null &&
+        video.currentTime >= this.videoRecoveryResumeAt + 0.5
+      ) {
+        this.markVideoRecoverySucceeded(video, mediaId);
+      }
     }
     if (this.videoReachedEnd(video)) {
       this.completeVideo(mediaId);
@@ -1177,8 +1252,43 @@ export class App implements OnDestroy {
       !video.paused &&
       !this.videoPaused()
     ) {
-      this.armVideoEndWatchdog(video, mediaId);
+      this.videoPlaybackState.set('playing');
+      this.armVideoWatchdog(video, mediaId);
     }
+  }
+
+  protected onVideoWaiting(
+    video: HTMLVideoElement,
+    mediaId: string,
+    reason: 'waiting' | 'stalled',
+  ): void {
+    if (!this.isCurrentStableVideo(video, mediaId) || video.paused || this.videoPaused()) {
+      return;
+    }
+    this.videoPlaybackState.set('waiting');
+    this.armVideoWatchdog(video, mediaId, VIDEO_STALL_TIMEOUT_MS, reason);
+  }
+
+  protected onVideoSeeking(video: HTMLVideoElement, mediaId: string): void {
+    if (!this.isCurrentStableVideo(video, mediaId)) return;
+    this.clearVideoWatchdog();
+    this.videoPlaybackState.set('loading');
+  }
+
+  protected onVideoSeeked(video: HTMLVideoElement, mediaId: string): void {
+    if (!this.isCurrentStableVideo(video, mediaId)) return;
+    this.updateVideoProgress(video);
+    this.noteVideoProgress(video, true);
+    if (!video.paused && !this.videoPaused()) {
+      this.videoPlaybackState.set('playing');
+      this.armVideoWatchdog(video, mediaId);
+    }
+  }
+
+  protected onVideoError(video: HTMLVideoElement, mediaId: string): void {
+    if (!this.isCurrentStableVideo(video, mediaId)) return;
+    this.videoPlaybackState.set('error');
+    this.recoverOrSkipVideo(video, mediaId, `media-error-${video.error?.code ?? 0}`);
   }
 
   protected toggleVideoPlayback(event: Event): void {
@@ -1189,18 +1299,13 @@ export class App implements OnDestroy {
     }
     if (video.paused) {
       this.clearPausedVideoAdvance();
-      void video.play().then(
-        () => this.videoPaused.set(false),
-        () => {
-          this.videoPaused.set(true);
-          const mediaId = this.currentMedia()?.id;
-          if (mediaId) this.schedulePausedVideoAdvance(mediaId);
-        },
-      );
+      const mediaId = this.currentMedia()?.id;
+      if (mediaId) this.attemptVideoPlay(video, mediaId);
     } else {
-      this.clearVideoEndWatchdog();
+      this.clearVideoWatchdog();
       video.pause();
       this.videoPaused.set(true);
+      this.videoPlaybackState.set('paused');
       const mediaId = this.currentMedia()?.id;
       if (mediaId) this.schedulePausedVideoAdvance(mediaId);
     }
@@ -1216,6 +1321,11 @@ export class App implements OnDestroy {
     const duration = Number.isFinite(video.duration) ? video.duration : requestedTime;
     video.currentTime = Math.min(Math.max(0, requestedTime), duration);
     this.updateVideoProgress(video);
+    this.noteVideoProgress(video, true);
+    if (!video.paused && !this.videoPaused()) {
+      const mediaId = this.currentMedia()?.id;
+      if (mediaId) this.armVideoWatchdog(video, mediaId);
+    }
   }
 
   protected formatVideoTime(seconds: number): string {
@@ -1482,7 +1592,7 @@ export class App implements OnDestroy {
     this.activeView.set(view);
     if (wasViewer) {
       this.clearPhotoTimer();
-      this.clearVideoEndWatchdog();
+      this.clearVideoMonitoring();
       this.clearPausedVideoAdvance();
       this.pauseVideoForSettings();
     }
@@ -1614,10 +1724,6 @@ export class App implements OnDestroy {
   }
 
   private navigate(direction: -1 | 1): void {
-    this.clearPhotoTimer();
-    this.clearVideoEndWatchdog();
-    this.clearPausedVideoAdvance();
-    this.clearViewerPointers();
     if (this.overlayOpen()) {
       return;
     }
@@ -1629,6 +1735,10 @@ export class App implements OnDestroy {
       return;
     }
 
+    this.clearPhotoTimer();
+    this.clearVideoMonitoring();
+    this.clearPausedVideoAdvance();
+    this.clearViewerPointers();
     void this.prepareAndStartCrossfade(direction);
   }
 
@@ -1651,8 +1761,10 @@ export class App implements OnDestroy {
     const targetManifest = this.pendingManifest() ?? active;
     let target: NavigationTarget | null = null;
     let lastError: unknown;
+    const preparationStartedAt = performance.now();
+    const candidateLimit = Math.min(targetManifest.media.length, NAVIGATION_MAX_CANDIDATES);
 
-    for (let offset = 0; offset < targetManifest.media.length; offset += 1) {
+    for (let offset = 0; offset < candidateLimit; offset += 1) {
       const candidate = this.resolveNavigationTarget(direction, offset);
       if (!candidate) {
         break;
@@ -1664,8 +1776,18 @@ export class App implements OnDestroy {
         }
         continue;
       }
+      if (
+        targetManifest.media.length > 1 &&
+        candidate.item.kind === 'video' &&
+        this.isVideoQuarantined(candidate.item)
+      ) {
+        continue;
+      }
       try {
-        await this.mediaReadiness.prepare(candidate.item);
+        const remainingMs = NAVIGATION_PREPARATION_BUDGET_MS -
+          (performance.now() - preparationStartedAt);
+        if (remainingMs <= 0) break;
+        await this.prepareMediaWithin(candidate.item, remainingMs);
         target = candidate;
         break;
       } catch (error) {
@@ -1696,7 +1818,20 @@ export class App implements OnDestroy {
       }
       this.currentIndex.set(target.index);
       this.preparingTransition.set(false);
-      this.resumeAfterAbortedNavigation(outgoingVideoWasPlaying);
+      if (target.item.kind === 'video') {
+        const video = this.currentVideoElement();
+        if (video && this.isVideoQuarantined(target.item)) {
+          this.quarantinedVideos.delete(this.videoQuarantineKey(target.item));
+          this.videoPlaybackState.set('error');
+          this.videoPaused.set(true);
+          this.schedulePausedVideoAdvance(target.item.id);
+        } else {
+          if (video) video.currentTime = 0;
+          this.playCurrentVideo();
+        }
+      } else {
+        this.resumeAfterAbortedNavigation(outgoingVideoWasPlaying);
+      }
       return;
     }
 
@@ -1750,6 +1885,23 @@ export class App implements OnDestroy {
     return { manifest: active, index, item: active.media[index] };
   }
 
+  private async prepareMediaWithin(item: MediaItem, timeoutMs: number): Promise<void> {
+    let timeout: number | undefined;
+    try {
+      await Promise.race([
+        this.mediaReadiness.prepare(item),
+        new Promise<never>((_, reject) => {
+          timeout = window.setTimeout(
+            () => reject(new Error('Tiempo de preparación agotado.')),
+            Math.max(1, timeoutMs),
+          );
+        }),
+      ]);
+    } finally {
+      if (timeout !== undefined) window.clearTimeout(timeout);
+    }
+  }
+
   private finishCrossfade(): void {
     this.crossfadeTimer = undefined;
     this.crossfade.set(null);
@@ -1768,7 +1920,7 @@ export class App implements OnDestroy {
     ) {
       return;
     }
-    this.clearVideoEndWatchdog();
+    this.clearVideoMonitoring();
     this.clearPausedVideoAdvance();
     this.videoPaused.set(false);
     this.navigate(1);
@@ -1778,39 +1930,140 @@ export class App implements OnDestroy {
     return video.ended;
   }
 
-  private armVideoEndWatchdog(video: HTMLVideoElement, mediaId: string): void {
-    if (!Number.isFinite(video.duration) || video.duration <= 0) {
-      return;
+  private beginVideoSession(video: HTMLVideoElement, mediaId: string): void {
+    if (this.videoSessionMediaId === mediaId && this.videoSessionElement === video) return;
+    this.clearVideoMonitoring();
+    this.videoSessionMediaId = mediaId;
+    this.videoSessionElement = video;
+    this.videoLastObservedTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    this.videoLastProgressAt = performance.now();
+    this.videoRecoveryAttempts = 0;
+  }
+
+  private noteVideoProgress(video: HTMLVideoElement, force = false): boolean {
+    const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    const progressed =
+      force || currentTime >= this.videoLastObservedTime + VIDEO_PROGRESS_EPSILON_SECONDS;
+    if (progressed) {
+      this.videoLastObservedTime = currentTime;
+      this.videoLastProgressAt = performance.now();
     }
-    this.clearVideoEndWatchdog();
-    const remainingMs = Math.max(0, video.duration - video.currentTime) * 1_000;
-    this.videoEndWatchdogTimer = window.setTimeout(() => {
-      this.videoEndWatchdogTimer = undefined;
+    return progressed;
+  }
+
+  private armVideoWatchdog(
+    video: HTMLVideoElement,
+    mediaId: string,
+    timeoutMs = VIDEO_STALL_TIMEOUT_MS,
+    reason = 'playback-stalled',
+  ): void {
+    const expectsStartup =
+      this.videoPlaybackState() === 'loading' || this.videoPlaybackState() === 'recovering';
+    if (
+      !this.isCurrentStableVideo(video, mediaId) ||
+      ((video.paused || this.videoPaused()) && !expectsStartup)
+    ) return;
+    this.beginVideoSession(video, mediaId);
+    this.clearVideoWatchdog();
+    const generation = this.videoSessionGeneration;
+    const elapsed = performance.now() - this.videoLastProgressAt;
+    const delay = Math.max(1, timeoutMs - elapsed);
+    this.videoWatchdogTimer = window.setTimeout(() => {
+      this.videoWatchdogTimer = undefined;
       if (
-        this.currentMedia()?.id !== mediaId ||
-        this.preparingTransition() ||
-        this.crossfade() ||
-        this.overlayOpen()
+        generation !== this.videoSessionGeneration ||
+        !this.isCurrentStableVideo(video, mediaId) ||
+        ((video.paused || this.videoPaused()) &&
+          this.videoPlaybackState() !== 'loading' &&
+          this.videoPlaybackState() !== 'recovering')
       ) {
         return;
       }
-      const remainingSeconds = video.duration - video.currentTime;
-      if (
-        video.ended ||
-        (Number.isFinite(remainingSeconds) && remainingSeconds <= VIDEO_END_STALL_WINDOW_SECONDS)
-      ) {
+      if (video.ended) {
         this.completeVideo(mediaId);
         return;
       }
-      this.armVideoEndWatchdog(video, mediaId);
-    }, remainingMs + VIDEO_END_WATCHDOG_GRACE_MS);
+      if (video.seeking) {
+        this.noteVideoProgress(video, true);
+        this.armVideoWatchdog(video, mediaId, timeoutMs, reason);
+        return;
+      }
+      if (this.noteVideoProgress(video)) {
+        this.videoPlaybackState.set('playing');
+        this.armVideoWatchdog(video, mediaId, VIDEO_STALL_TIMEOUT_MS);
+        return;
+      }
+      this.recoverOrSkipVideo(video, mediaId, reason);
+    }, delay);
   }
 
-  private clearVideoEndWatchdog(): void {
-    if (this.videoEndWatchdogTimer !== undefined) {
-      window.clearTimeout(this.videoEndWatchdogTimer);
-      this.videoEndWatchdogTimer = undefined;
+  private recoverOrSkipVideo(video: HTMLVideoElement, mediaId: string, reason: string): void {
+    if (!this.isCurrentStableVideo(video, mediaId)) return;
+    this.clearVideoWatchdog();
+    if (this.videoRecoveryAttempts < VIDEO_MAX_RECOVERY_ATTEMPTS) {
+      this.videoRecoveryAttempts += 1;
+      this.videoPlaybackState.set('recovering');
+      this.reportPlaybackEvent('viewer.playback.recovery', video, mediaId, reason);
+      const resumeAt = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      this.videoRecoveryResumeAt = resumeAt;
+      this.noteVideoProgress(video, true);
+      const separator = this.currentMedia()?.url.includes('?') ? '&' : '?';
+      const restorePosition = () => {
+        if (!this.isCurrentStableVideo(video, mediaId)) return;
+        if (Number.isFinite(video.duration) && video.duration > 0) {
+          video.currentTime = Math.min(resumeAt, Math.max(0, video.duration - 0.1));
+        }
+      };
+      video.addEventListener('loadedmetadata', restorePosition, { once: true });
+      video.src = `${this.currentMedia()?.url ?? video.currentSrc}${separator}naiskosRetry=${this.videoSessionGeneration}-${this.videoRecoveryAttempts}`;
+      video.load();
+      this.armVideoWatchdog(video, mediaId, VIDEO_START_TIMEOUT_MS, 'recovery-timeout');
+      return;
     }
+
+    const item = this.currentMedia();
+    const key = item ? this.videoQuarantineKey(item) : mediaId;
+    const failures = (this.videoFailureCounts.get(key) ?? 0) + 1;
+    this.videoFailureCounts.set(key, failures);
+    if (failures >= VIDEO_QUARANTINE_FAILURES) {
+      this.quarantinedVideos.set(key, Date.now() + VIDEO_QUARANTINE_MS);
+    }
+    this.videoPlaybackState.set('error');
+    this.reportPlaybackEvent('viewer.playback.skipped', video, mediaId, reason);
+    this.completeVideo(mediaId);
+  }
+
+  private clearVideoWatchdog(): void {
+    if (this.videoWatchdogTimer !== undefined) {
+      window.clearTimeout(this.videoWatchdogTimer);
+      this.videoWatchdogTimer = undefined;
+    }
+  }
+
+  private clearVideoMonitoring(): void {
+    this.clearVideoWatchdog();
+    this.videoSessionGeneration += 1;
+    this.videoSessionMediaId = null;
+    this.videoSessionElement = null;
+    this.videoLastProgressAt = 0;
+    this.videoLastObservedTime = 0;
+    this.videoRecoveryAttempts = 0;
+    this.videoRecoveryResumeAt = null;
+  }
+
+  private markVideoRecoverySucceeded(video: HTMLVideoElement, mediaId: string): void {
+    this.reportPlaybackEvent('viewer.playback.recovered', video, mediaId, 'progress-restored');
+    this.videoRecoveryAttempts = 0;
+    this.videoRecoveryResumeAt = null;
+    this.markVideoHealthy(mediaId);
+  }
+
+  private markVideoHealthy(mediaId: string): void {
+    const item = this.currentMedia();
+    if (!item || item.id !== mediaId) return;
+    const key = this.videoQuarantineKey(item);
+    this.videoFailureCounts.delete(key);
+    this.quarantinedVideos.delete(key);
   }
 
   private schedulePausedVideoAdvance(mediaId: string): void {
@@ -1885,9 +2138,10 @@ export class App implements OnDestroy {
     this.clearPausedVideoAdvance();
     const video = this.currentVideoElement();
     if (video && !video.paused) {
-      this.clearVideoEndWatchdog();
+      this.clearVideoMonitoring();
       video.pause();
       this.videoPaused.set(true);
+      this.videoPlaybackState.set('paused');
     }
   }
 
@@ -1901,8 +2155,12 @@ export class App implements OnDestroy {
   }
 
   private resumeAfterAbortedNavigation(videoWasPlaying: boolean): void {
-    if (videoWasPlaying && this.currentMedia()?.kind === 'video') {
-      this.playCurrentVideo();
+    if (this.currentMedia()?.kind === 'video') {
+      const video = this.currentVideoElement();
+      if (video?.ended || video?.error) {
+        video.currentTime = 0;
+      }
+      if (videoWasPlaying || video?.ended || Boolean(video?.error)) this.playCurrentVideo();
       return;
     }
     this.schedulePhotoAdvance(this.currentMedia(), this.settings().photoDurationSeconds);
@@ -1965,22 +2223,105 @@ export class App implements OnDestroy {
 
   private playCurrentVideo(): void {
     const video = this.currentVideoElement();
-    if (!video || this.currentMedia()?.kind !== 'video' || this.overlayOpen()) {
+    const mediaId = this.currentMedia()?.id;
+    if (!video || !mediaId || this.currentMedia()?.kind !== 'video' || this.overlayOpen()) {
       return;
     }
     video.volume = this.settings().volume;
     video.muted = this.settings().muted;
     this.clearPausedVideoAdvance();
+    this.beginVideoSession(video, mediaId);
+    this.attemptVideoPlay(video, mediaId);
+  }
+
+  private attemptVideoPlay(video: HTMLVideoElement, mediaId: string): void {
+    this.beginVideoSession(video, mediaId);
+    this.videoPlaybackState.set(this.videoRecoveryAttempts > 0 ? 'recovering' : 'loading');
+    this.videoPaused.set(false);
+    this.armVideoWatchdog(video, mediaId, VIDEO_START_TIMEOUT_MS, 'play-start-timeout');
     void video.play().then(
       () => {
+        if (!this.isCurrentStableVideo(video, mediaId)) return;
         this.videoPaused.set(false);
+        this.videoPlaybackState.set('playing');
+        this.noteVideoProgress(video, true);
+        this.armVideoWatchdog(video, mediaId);
       },
-      () => {
-        this.videoPaused.set(true);
-        const mediaId = this.currentMedia()?.id;
-        if (mediaId) this.schedulePausedVideoAdvance(mediaId);
+      (error: unknown) => {
+        if (!this.isCurrentStableVideo(video, mediaId)) return;
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          this.armVideoWatchdog(video, mediaId, VIDEO_START_TIMEOUT_MS, 'play-aborted');
+          return;
+        }
+        this.videoPlaybackState.set('error');
+        this.recoverOrSkipVideo(video, mediaId, 'play-rejected');
       },
     );
+  }
+
+  private isCurrentStableVideo(video: HTMLVideoElement, mediaId: string): boolean {
+    return (
+      this.currentMedia()?.kind === 'video' &&
+      this.currentMedia()?.id === mediaId &&
+      video.dataset['mediaId'] === mediaId &&
+      !this.preparingTransition() &&
+      !this.crossfade() &&
+      !this.overlayOpen()
+    );
+  }
+
+  private videoQuarantineKey(item: MediaItem): string {
+    return `${item.id}:${item.sha256}`;
+  }
+
+  private isVideoQuarantined(item: MediaItem): boolean {
+    const key = this.videoQuarantineKey(item);
+    const until = this.quarantinedVideos.get(key);
+    if (until === undefined) return false;
+    if (until > Date.now()) return true;
+    this.quarantinedVideos.delete(key);
+    return false;
+  }
+
+  private viewerPlaybackSnapshot(): ViewerPlaybackSnapshot {
+    const media = this.currentMedia();
+    const video = media?.kind === 'video' ? this.currentVideoElement() : null;
+    return {
+      mediaId: media?.id ?? null,
+      mediaKind: media?.kind ?? null,
+      state: media?.kind === 'photo'
+        ? 'photo'
+        : media?.kind === 'video'
+          ? this.videoPlaybackState()
+          : 'empty',
+      currentTime: video && Number.isFinite(video.currentTime) ? video.currentTime : 0,
+      duration: video && Number.isFinite(video.duration) ? video.duration : 0,
+      readyState: video?.readyState ?? 0,
+      networkState: video?.networkState ?? 0,
+      paused: video?.paused ?? false,
+      ended: video?.ended ?? false,
+      seeking: video?.seeking ?? false,
+      view: this.overlayOpen() ? 'overlay' : 'viewer',
+    };
+  }
+
+  private reportPlaybackEvent(
+    type: ViewerPlaybackEvent['type'],
+    video: HTMLVideoElement,
+    mediaId: string,
+    reason: string,
+  ): void {
+    const media = this.currentMedia();
+    if (media?.id !== mediaId) return;
+    const event: ViewerPlaybackEvent = {
+      ...this.viewerPlaybackSnapshot(),
+      type,
+      reason,
+      attempt: this.videoRecoveryAttempts,
+      mediaSha256: media.sha256,
+      mediaErrorCode: video.error?.code ?? null,
+    };
+    this.agent.reportPlaybackEvent(event).pipe(catchError(() => of(null))).subscribe();
   }
 
   private currentVideoElement(): HTMLVideoElement | null {

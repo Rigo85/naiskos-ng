@@ -12,6 +12,8 @@ import {
   WeatherSnapshot,
   FrameNotification,
   AgentHealth,
+  ViewerPlaybackEvent,
+  ViewerPlaybackSnapshot,
 } from './models';
 
 export type SystemAction = 'exit' | 'poweroff';
@@ -23,6 +25,10 @@ export class AgentApi {
 
   getManifest(): Observable<FrameManifest> {
     return this.http.get<FrameManifest>(`${this.baseUrl}/manifest`);
+  }
+
+  getManifestVersion(): Observable<{ version: number }> {
+    return this.http.get<{ version: number }>(`${this.baseUrl}/manifest/version`);
   }
 
   getHealth(): Observable<AgentHealth> {
@@ -114,5 +120,17 @@ export class AgentApi {
       { action },
       { headers: { 'X-Naiskos-Request': 'viewer' } },
     );
+  }
+
+  reportViewerHeartbeat(snapshot: ViewerPlaybackSnapshot): Observable<void> {
+    return this.http.post<void>(`${this.baseUrl}/viewer/heartbeat`, snapshot, {
+      headers: { 'X-Naiskos-Request': 'viewer' },
+    });
+  }
+
+  reportPlaybackEvent(event: ViewerPlaybackEvent): Observable<{ accepted: boolean }> {
+    return this.http.post<{ accepted: boolean }>(`${this.baseUrl}/viewer/playback-events`, event, {
+      headers: { 'X-Naiskos-Request': 'viewer' },
+    });
   }
 }

@@ -7,6 +7,50 @@
   (lostpointercapture)="cancelPointer($event)"
   (contextmenu)="preventContextMenu($event)"
 >
+  @if (reposeActive()) {
+    <section
+      class="repose-screen"
+      aria-label="Naiskos en reposo"
+      (pointerdown)="revealReposeMenu()"
+    >
+      <div class="repose-clock" aria-live="off">
+        <strong>{{ displayTime() }}</strong>
+        <span class="repose-clock__date">{{ reposeDate() }}</span>
+        <span class="repose-clock__weather" [title]="weatherDescription()">
+          <span aria-hidden="true">{{ reposeWeatherIcon() }}</span>
+          <span>{{ reposeTemperature() }}</span>
+          <small>{{ weatherDescription() }}</small>
+        </span>
+      </div>
+
+      @if (reposeMenuVisible()) {
+        <div class="repose-menu-backdrop" (pointerdown)="hideReposeMenu($event)">
+          <div
+            class="repose-menu"
+            role="dialog"
+            aria-modal="true"
+            (pointerdown)="$event.stopPropagation()"
+          >
+            <span class="eyebrow">Naiskos</span>
+            <h2>Modo reposo</h2>
+            <p>La presentación continuará desde este mismo contenido.</p>
+            @if (reposeRequestError()) {
+              <p class="confirmation-dialog__error" role="alert">{{ reposeRequestError() }}</p>
+            }
+            <button
+              class="button button--primary repose-menu__exit"
+              type="button"
+              [disabled]="reposeRequestPending()"
+              (click)="exitRepose($event)"
+            >
+              {{ reposeRequestPending() ? 'Saliendo…' : 'Salir del reposo' }}
+            </button>
+          </div>
+        </div>
+      }
+    </section>
+  }
+
   @for (slide of renderedSlides(); track slide.item.id) {
     <section
       class="stage"
@@ -254,6 +298,9 @@
 
         <div class="quick-menu__equipment">
           <span>Equipo</span>
+          <button class="button button--ghost" type="button" (click)="openReposeConfirmation()">
+            Poner en reposo
+          </button>
           <button class="button button--ghost" type="button" (click)="openSystemAction('exit')">
             Salir de Naiskos
           </button>
@@ -999,6 +1046,13 @@
                   <button
                     class="button button--ghost"
                     type="button"
+                    (click)="openReposeConfirmation()"
+                  >
+                    Poner en reposo
+                  </button>
+                  <button
+                    class="button button--ghost"
+                    type="button"
                     (click)="openSystemAction('exit')"
                   >
                     Salir de Naiskos
@@ -1145,6 +1199,34 @@
             </button>
           </div>
         }
+      </div>
+    </section>
+  }
+
+  @if (reposeConfirming()) {
+    <section class="confirmation-backdrop" role="dialog" aria-modal="true">
+      <div class="confirmation-dialog">
+        <span class="eyebrow">Confirmación</span>
+        <h2>¿Poner Naiskos en reposo?</h2>
+        <p>
+          Se pausará la presentación y se mostrará el reloj. Podrás reanudarla tocando la pantalla.
+        </p>
+        @if (reposeRequestError()) {
+          <p class="confirmation-dialog__error" role="alert">{{ reposeRequestError() }}</p>
+        }
+        <div class="confirmation-dialog__buttons">
+          <button class="button button--ghost" type="button" (click)="cancelReposeConfirmation()">
+            Cancelar
+          </button>
+          <button
+            class="button button--primary"
+            type="button"
+            [disabled]="reposeRequestPending()"
+            (click)="confirmRepose()"
+          >
+            {{ reposeRequestPending() ? 'Activando…' : 'Sí, poner en reposo' }}
+          </button>
+        </div>
       </div>
     </section>
   }

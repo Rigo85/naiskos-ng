@@ -10,6 +10,7 @@ import {
   FrameManifest,
   FrameNotification,
   MediaItem,
+  ReposeState,
   WeatherSnapshot,
 } from './core/models';
 
@@ -107,6 +108,26 @@ const deleteMediaBatchMock = vi.fn((ids: string[]) => of({ accepted: true, count
 const markAllNotificationsReadMock = vi.fn(() => of({ updated: 1 }));
 const dismissNotificationMock = vi.fn(() => of(undefined));
 const reportPlaybackEventMock = vi.fn(() => of({ accepted: true }));
+const awakeRepose: ReposeState = {
+  schemaVersion: 1,
+  active: false,
+  source: null,
+  enteredAt: null,
+  updatedAt: '2026-09-14T15:00:00.000Z',
+  overrideUntil: null,
+  schedule: { from: '23:30', until: '07:00' },
+};
+let servedRepose = awakeRepose;
+const setReposeMock = vi.fn((active: boolean) => {
+  servedRepose = {
+    ...servedRepose,
+    active,
+    source: 'manual',
+    enteredAt: active ? '2026-09-14T15:00:00.000Z' : null,
+    updatedAt: new Date().toISOString(),
+  };
+  return of(servedRepose);
+});
 
 const agentApiMock = {
   getManifest: () => of(servedManifest),
@@ -172,6 +193,8 @@ const agentApiMock = {
   deleteMedia: deleteMediaMock,
   deleteMediaBatch: deleteMediaBatchMock,
   requestSystemAction: () => of({ accepted: true }),
+  getRepose: () => of(servedRepose),
+  setRepose: setReposeMock,
   reportViewerHeartbeat: () => of(undefined),
   reportPlaybackEvent: reportPlaybackEventMock,
 };
@@ -217,6 +240,8 @@ describe('App', () => {
   beforeEach(async () => {
     servedManifest = manifest;
     servedNotifications = [];
+    servedRepose = awakeRepose;
+    setReposeMock.mockClear();
     mediaReadinessMock.prepare.mockClear();
     updateMediaMock.mockClear();
     rotateMediaMock.mockClear();
@@ -239,6 +264,41 @@ describe('App', () => {
     fixture.detectChanges();
     expect(fixture.componentInstance).toBeTruthy();
     fixture.destroy();
+  });
+
+  it('muestra el reloj en reposo, oculta su menú a los 15 segundos y reanuda', async () => {
+    vi.useFakeTimers();
+    servedRepose = {
+      ...awakeRepose,
+      active: true,
+      source: 'schedule',
+      enteredAt: '2026-09-14T23:30:00.000Z',
+    };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    const screen = compiled.querySelector('.repose-screen') as HTMLElement;
+    expect(screen).not.toBeNull();
+    expect(compiled.querySelector('.repose-clock')).not.toBeNull();
+    expect(compiled.querySelector('.repose-menu')).toBeNull();
+
+    dispatchPointer(screen, 'pointerdown', 640, 400);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.repose-menu')).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(15_000);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.repose-menu')).toBeNull();
+
+    dispatchPointer(screen, 'pointerdown', 640, 400);
+    fixture.detectChanges();
+    (compiled.querySelector('.repose-menu__exit') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    expect(setReposeMock).toHaveBeenCalledWith(false);
+    expect(compiled.querySelector('.repose-screen')).toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
   });
 
   it('muestra la campana con contador y abre notificaciones persistentes', async () => {
@@ -1085,7 +1145,9 @@ describe('App', () => {
     Object.defineProperty(element, 'currentTime', {
       configurable: true,
       get: () => currentTime,
-      set: (value: number) => { currentTime = value; },
+      set: (value: number) => {
+        currentTime = value;
+      },
     });
     Object.defineProperty(element, 'paused', { configurable: true, value: false });
     vi.spyOn(element, 'load').mockImplementation(() => undefined);

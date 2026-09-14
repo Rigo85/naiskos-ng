@@ -14,6 +14,7 @@ import {
   AgentHealth,
   ViewerPlaybackEvent,
   ViewerPlaybackSnapshot,
+  ReposeState,
 } from './models';
 
 export type SystemAction = 'exit' | 'poweroff';
@@ -44,22 +45,15 @@ export class AgentApi {
   }
 
   getNotifications(): Observable<{ notifications: FrameNotification[] }> {
-    return this.http.get<{ notifications: FrameNotification[] }>(
-      `${this.baseUrl}/notifications`,
-    );
+    return this.http.get<{ notifications: FrameNotification[] }>(`${this.baseUrl}/notifications`);
   }
 
   markAllNotificationsRead(): Observable<{ updated: number }> {
-    return this.http.post<{ updated: number }>(
-      `${this.baseUrl}/notifications/read-all`,
-      {},
-    );
+    return this.http.post<{ updated: number }>(`${this.baseUrl}/notifications/read-all`, {});
   }
 
   dismissNotification(id: string): Observable<void> {
-    return this.http.delete<void>(
-      `${this.baseUrl}/notifications/${encodeURIComponent(id)}`,
-    );
+    return this.http.delete<void>(`${this.baseUrl}/notifications/${encodeURIComponent(id)}`);
   }
 
   resetProvisioning(): Observable<ProvisioningStatus> {
@@ -118,6 +112,18 @@ export class AgentApi {
     return this.http.post<{ accepted: boolean }>(
       `${this.baseUrl}/system/actions`,
       { action },
+      { headers: { 'X-Naiskos-Request': 'viewer' } },
+    );
+  }
+
+  getRepose(): Observable<ReposeState> {
+    return this.http.get<ReposeState>(`${this.baseUrl}/repose`);
+  }
+
+  setRepose(active: boolean): Observable<ReposeState> {
+    return this.http.post<ReposeState>(
+      `${this.baseUrl}/repose`,
+      { active },
       { headers: { 'X-Naiskos-Request': 'viewer' } },
     );
   }

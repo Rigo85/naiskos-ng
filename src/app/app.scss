@@ -1663,6 +1663,100 @@ select {
   font-weight: 700;
 }
 
+.repose-screen {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #f2ede4;
+  background: #030303;
+  cursor: default;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.repose-clock {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 6px;
+  text-align: center;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.9);
+}
+
+.repose-clock > strong {
+  font-size: clamp(92px, 14vw, 164px);
+  font-weight: 520;
+  letter-spacing: -0.055em;
+  line-height: 0.95;
+  font-variant-numeric: tabular-nums;
+}
+
+.repose-clock__date {
+  margin-top: 14px;
+  color: rgba(242, 237, 228, 0.82);
+  font-size: clamp(24px, 3.1vw, 38px);
+  font-weight: 480;
+  text-transform: capitalize;
+}
+
+.repose-clock__weather {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+  color: rgba(242, 237, 228, 0.72);
+  font-size: clamp(24px, 3vw, 36px);
+}
+
+.repose-clock__weather small {
+  color: rgba(242, 237, 228, 0.56);
+  font-size: 0.58em;
+  font-weight: 500;
+}
+
+.repose-menu-backdrop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.62);
+}
+
+.repose-menu {
+  width: min(470px, 100%);
+  padding: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 24px;
+  background: #151516;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.72);
+  text-align: center;
+}
+
+.repose-menu h2,
+.repose-menu p {
+  margin: 0;
+}
+
+.repose-menu h2 {
+  margin-top: 8px;
+  font-size: 30px;
+}
+
+.repose-menu p {
+  margin-top: 12px;
+  color: rgba(255, 255, 255, 0.67);
+  line-height: 1.45;
+}
+
+.repose-menu__exit {
+  min-width: 240px;
+  margin-top: 24px;
+}
+
 @keyframes crossfade-out {
   from {
     opacity: 1;

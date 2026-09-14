@@ -27,6 +27,7 @@ import {
   MediaItem,
   MediaRotation,
   ProvisioningStatus,
+  ReposeState,
   ViewerPlaybackEvent,
   ViewerPlaybackSnapshot,
   ViewerPlaybackState,
@@ -147,6 +148,7 @@ const GALLERY_CARD_CAPTION_HEIGHT_PX = 58;
 const PHOTO_GESTURE_THRESHOLD_PX = 8;
 const PHOTO_PINCH_SCALE_THRESHOLD = 0.02;
 const PHOTO_ZOOM_ACTIVE_THRESHOLD = 1.001;
+const REPOSE_MENU_TIMEOUT_MS = 15_000;
 
 @Component({
   selector: 'app-root',
@@ -216,6 +218,12 @@ export class App implements OnDestroy {
     mediaId: null,
     ...IDENTITY_PHOTO_TRANSFORM,
   });
+  protected readonly repose = signal<ReposeState | null>(null);
+  protected readonly reposeActive = computed(() => this.repose()?.active ?? true);
+  protected readonly reposeMenuVisible = signal(false);
+  protected readonly reposeRequestPending = signal(false);
+  protected readonly reposeRequestError = signal<string | null>(null);
+  protected readonly reposeConfirming = signal(false);
 
   protected settingsDraft: FrameSettings = { ...DEFAULT_FRAME_SETTINGS };
   protected readonly settings = computed(() => this.manifest()?.settings ?? DEFAULT_FRAME_SETTINGS);
@@ -328,6 +336,25 @@ export class App implements OnDestroy {
       ...(this.weather().location?.timezone ? { timeZone: this.weather().location!.timezone } : {}),
     }).format(this.now()),
   );
+  protected readonly reposeDate = computed(() =>
+    new Intl.DateTimeFormat('es-PE', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      ...(this.weather().location?.timezone ? { timeZone: this.weather().location!.timezone } : {}),
+    }).format(this.now()),
+  );
+  protected readonly reposeTemperature = computed(() => {
+    const current = this.weather().current;
+    if (!current) return '--°';
+    return this.settings().temperatureUnit === 'f'
+      ? `${Math.round((current.temperatureC * 9) / 5 + 32)}°`
+      : `${Math.round(current.temperatureC)}°`;
+  });
+  protected readonly reposeWeatherIcon = computed(() => {
+    const current = this.weather().current;
+    return current ? iconForWeatherCode(current.weatherCode, current.isDay) : '◌';
+  });
   protected readonly weatherIcon = computed(() => {
     const current = this.weather().current;
     if (!current || this.weather().status !== 'ready') return '◌';
@@ -410,6 +437,8 @@ export class App implements OnDestroy {
   private suppressGalleryClick = false;
   private galleryLastDragAt = 0;
   private galleryClickResetTimer: number | undefined;
+  private reposeMenuTimer: number | undefined;
+  private reposeVideoWasPlaying = false;
 
   constructor() {
     this.subscriptions.add(
@@ -422,11 +451,13 @@ export class App implements OnDestroy {
               this.pendingManifest()?.version ?? -1,
             );
             const request = installed
-              ? this.agent.getManifestVersion().pipe(
-                  switchMap(({ version }) =>
-                    version === knownVersion ? of(null) : this.agent.getManifest(),
-                  ),
-                )
+              ? this.agent
+                  .getManifestVersion()
+                  .pipe(
+                    switchMap(({ version }) =>
+                      version === knownVersion ? of(null) : this.agent.getManifest(),
+                    ),
+                  )
               : this.agent.getManifest();
             return request.pipe(
               catchError((error: HttpErrorResponse) => {
@@ -449,6 +480,13 @@ export class App implements OnDestroy {
     );
     this.subscriptions.add(timer(0, 1_000).subscribe(() => this.now.set(new Date())));
     this.subscriptions.add(
+      timer(0, 1_000)
+        .pipe(switchMap(() => this.agent.getRepose().pipe(catchError(() => of(null)))))
+        .subscribe((state) => {
+          if (state) this.applyReposeState(state);
+        }),
+    );
+    this.subscriptions.add(
       timer(0, 60_000)
         .pipe(switchMap(() => this.agent.getWeather().pipe(catchError(() => of(null)))))
         .subscribe((weather) => {
@@ -466,9 +504,9 @@ export class App implements OnDestroy {
       timer(0, VIEWER_HEARTBEAT_INTERVAL_MS)
         .pipe(
           switchMap(() =>
-            this.agent.reportViewerHeartbeat(this.viewerPlaybackSnapshot()).pipe(
-              catchError(() => of(null)),
-            ),
+            this.agent
+              .reportViewerHeartbeat(this.viewerPlaybackSnapshot())
+              .pipe(catchError(() => of(null))),
           ),
         )
         .subscribe(),
@@ -492,7 +530,7 @@ export class App implements OnDestroy {
       const current = this.currentMedia();
       const duration = this.settings().photoDurationSeconds;
       const transitionActive = this.preparingTransition() || this.crossfade() !== null;
-      if (transitionActive) {
+      if (transitionActive || this.reposeActive()) {
         this.clearPhotoTimer();
       } else {
         this.schedulePhotoAdvance(current, duration);
@@ -509,10 +547,11 @@ export class App implements OnDestroy {
     this.clearPausedVideoAdvance();
     this.clearGalleryClickReset();
     this.clearViewerPointers();
+    this.clearReposeMenuTimer();
   }
 
   protected onPointerDown(event: PointerEvent): void {
-    if (this.overlayOpen()) {
+    if (this.overlayOpen() || this.reposeActive()) {
       return;
     }
     const target = event.currentTarget as HTMLElement;
@@ -726,6 +765,66 @@ export class App implements OnDestroy {
 
   protected openMainMenu(): void {
     this.openOverlay('menu');
+  }
+
+  protected openReposeConfirmation(): void {
+    this.reposeRequestError.set(null);
+    this.reposeConfirming.set(true);
+  }
+
+  protected cancelReposeConfirmation(): void {
+    if (!this.reposeRequestPending()) this.reposeConfirming.set(false);
+  }
+
+  protected confirmRepose(): void {
+    if (this.reposeRequestPending()) return;
+    this.reposeRequestPending.set(true);
+    this.reposeRequestError.set(null);
+    this.agent.setRepose(true).subscribe({
+      next: (state) => {
+        this.reposeRequestPending.set(false);
+        this.reposeConfirming.set(false);
+        this.applyReposeState(state);
+      },
+      error: () => {
+        this.reposeRequestPending.set(false);
+        this.reposeRequestError.set('No se pudo activar el reposo.');
+      },
+    });
+  }
+
+  protected revealReposeMenu(): void {
+    if (!this.reposeActive()) return;
+    this.reposeMenuVisible.set(true);
+    this.clearReposeMenuTimer();
+    this.reposeMenuTimer = window.setTimeout(() => {
+      this.reposeMenuVisible.set(false);
+      this.reposeMenuTimer = undefined;
+    }, REPOSE_MENU_TIMEOUT_MS);
+  }
+
+  protected hideReposeMenu(event?: Event): void {
+    event?.stopPropagation();
+    this.reposeMenuVisible.set(false);
+    this.clearReposeMenuTimer();
+  }
+
+  protected exitRepose(event: Event): void {
+    event.stopPropagation();
+    if (this.reposeRequestPending()) return;
+    this.reposeRequestPending.set(true);
+    this.reposeRequestError.set(null);
+    this.agent.setRepose(false).subscribe({
+      next: (state) => {
+        this.reposeRequestPending.set(false);
+        this.applyReposeState(state);
+      },
+      error: () => {
+        this.reposeRequestPending.set(false);
+        this.reposeRequestError.set('No se pudo salir del reposo.');
+        this.revealReposeMenu();
+      },
+    });
   }
 
   protected openGallery(): void {
@@ -1175,7 +1274,8 @@ export class App implements OnDestroy {
       this.currentMedia()?.id !== mediaId ||
       this.preparingTransition() ||
       this.crossfade() ||
-      this.overlayOpen()
+      this.overlayOpen() ||
+      this.reposeActive()
     ) {
       video.pause();
       return;
@@ -1199,6 +1299,10 @@ export class App implements OnDestroy {
   }
 
   protected onVideoPlaying(video: HTMLVideoElement, mediaId: string): void {
+    if (this.reposeActive()) {
+      video.pause();
+      return;
+    }
     if (this.currentMedia()?.id === mediaId && !this.crossfade() && !this.overlayOpen()) {
       this.clearPausedVideoAdvance();
       this.videoPaused.set(false);
@@ -1212,6 +1316,11 @@ export class App implements OnDestroy {
 
   protected onVideoPause(video: HTMLVideoElement, mediaId: string): void {
     if (this.currentMedia()?.id !== mediaId || this.preparingTransition() || this.crossfade()) {
+      return;
+    }
+    if (this.reposeActive()) {
+      this.clearVideoWatchdog();
+      this.updateVideoProgress(video);
       return;
     }
     this.clearVideoWatchdog();
@@ -1244,6 +1353,7 @@ export class App implements OnDestroy {
         this.markVideoRecoverySucceeded(video, mediaId);
       }
     }
+    if (this.reposeActive()) return;
     if (this.videoReachedEnd(video)) {
       this.completeVideo(mediaId);
     } else if (
@@ -1725,7 +1835,7 @@ export class App implements OnDestroy {
   }
 
   private navigate(direction: -1 | 1): void {
-    if (this.overlayOpen()) {
+    if (this.overlayOpen() || this.reposeActive()) {
       return;
     }
     if (this.preparingTransition() || this.crossfade()) {
@@ -1785,8 +1895,8 @@ export class App implements OnDestroy {
         continue;
       }
       try {
-        const remainingMs = NAVIGATION_PREPARATION_BUDGET_MS -
-          (performance.now() - preparationStartedAt);
+        const remainingMs =
+          NAVIGATION_PREPARATION_BUDGET_MS - (performance.now() - preparationStartedAt);
         if (remainingMs <= 0) break;
         await this.prepareMediaWithin(candidate.item, remainingMs);
         target = candidate;
@@ -1971,7 +2081,8 @@ export class App implements OnDestroy {
     if (
       !this.isCurrentStableVideo(video, mediaId) ||
       ((video.paused || this.videoPaused()) && !expectsStartup)
-    ) return;
+    )
+      return;
     this.beginVideoSession(video, mediaId);
     this.clearVideoWatchdog();
     const generation = this.videoSessionGeneration;
@@ -2085,7 +2196,8 @@ export class App implements OnDestroy {
         this.videoPaused() &&
         !this.overlayOpen() &&
         !this.preparingTransition() &&
-        !this.crossfade()
+        !this.crossfade() &&
+        !this.reposeActive()
       ) {
         this.navigate(1);
       }
@@ -2112,7 +2224,8 @@ export class App implements OnDestroy {
       this.overlayOpen() ||
       this.videoPaused() ||
       this.activePointers.size > 0 ||
-      this.photoTimerInteractionMediaId !== null
+      this.photoTimerInteractionMediaId !== null ||
+      this.reposeActive()
     ) {
       return;
     }
@@ -2127,7 +2240,8 @@ export class App implements OnDestroy {
         this.photoTimerInteractionMediaId !== null ||
         this.overlayOpen() ||
         this.preparingTransition() ||
-        this.crossfade()
+        this.crossfade() ||
+        this.reposeActive()
       ) {
         return;
       }
@@ -2155,6 +2269,7 @@ export class App implements OnDestroy {
   }
 
   private resumeCurrentCycle(): void {
+    if (this.reposeActive()) return;
     const video = this.currentVideoElement();
     if (video && this.currentMedia()?.kind === 'video') {
       this.playCurrentVideo();
@@ -2233,7 +2348,13 @@ export class App implements OnDestroy {
   private playCurrentVideo(): void {
     const video = this.currentVideoElement();
     const mediaId = this.currentMedia()?.id;
-    if (!video || !mediaId || this.currentMedia()?.kind !== 'video' || this.overlayOpen()) {
+    if (
+      !video ||
+      !mediaId ||
+      this.currentMedia()?.kind !== 'video' ||
+      this.overlayOpen() ||
+      this.reposeActive()
+    ) {
       return;
     }
     video.volume = this.settings().volume;
@@ -2275,7 +2396,8 @@ export class App implements OnDestroy {
       video.dataset['mediaId'] === mediaId &&
       !this.preparingTransition() &&
       !this.crossfade() &&
-      !this.overlayOpen()
+      !this.overlayOpen() &&
+      !this.reposeActive()
     );
   }
 
@@ -2298,11 +2420,13 @@ export class App implements OnDestroy {
     return {
       mediaId: media?.id ?? null,
       mediaKind: media?.kind ?? null,
-      state: media?.kind === 'photo'
-        ? 'photo'
-        : media?.kind === 'video'
-          ? this.videoPlaybackState()
-          : 'empty',
+      state: this.reposeActive()
+        ? 'repose'
+        : media?.kind === 'photo'
+          ? 'photo'
+          : media?.kind === 'video'
+            ? this.videoPlaybackState()
+            : 'empty',
       currentTime: video && Number.isFinite(video.currentTime) ? video.currentTime : 0,
       duration: video && Number.isFinite(video.duration) ? video.duration : 0,
       readyState: video?.readyState ?? 0,
@@ -2310,8 +2434,56 @@ export class App implements OnDestroy {
       paused: video?.paused ?? false,
       ended: video?.ended ?? false,
       seeking: video?.seeking ?? false,
-      view: this.overlayOpen() ? 'overlay' : 'viewer',
+      view: this.reposeActive() ? 'repose' : this.overlayOpen() ? 'overlay' : 'viewer',
     };
+  }
+
+  private applyReposeState(state: ReposeState): void {
+    const currentState = this.repose();
+    if (currentState && Date.parse(state.updatedAt) < Date.parse(currentState.updatedAt)) return;
+    const previous = currentState?.active ?? true;
+    const video = this.currentVideoElement();
+    const videoWasPlaying = Boolean(video && !video.paused && !this.videoPaused());
+    this.repose.set(state);
+    if (!previous && state.active) {
+      this.enterRepose(videoWasPlaying);
+    } else if (previous && !state.active) {
+      this.leaveRepose();
+    }
+  }
+
+  private enterRepose(videoWasPlaying: boolean): void {
+    const video = this.currentVideoElement();
+    this.reposeVideoWasPlaying = videoWasPlaying;
+    this.navigationGeneration += 1;
+    this.preparingTransition.set(false);
+    this.clearCrossfadeTimer();
+    this.crossfade.set(null);
+    this.clearPhotoTimer();
+    this.clearVideoMonitoring();
+    this.clearPausedVideoAdvance();
+    this.clearViewerPointers();
+    this.activeView.set('viewer');
+    video?.pause();
+  }
+
+  private leaveRepose(): void {
+    this.hideReposeMenu();
+    const media = this.currentMedia();
+    if (media?.kind === 'video') {
+      if (this.reposeVideoWasPlaying || !this.videoPaused()) this.playCurrentVideo();
+      else if (this.videoPaused()) this.schedulePausedVideoAdvance(media.id);
+    } else {
+      this.schedulePhotoAdvance(media, this.settings().photoDurationSeconds);
+    }
+    this.reposeVideoWasPlaying = false;
+  }
+
+  private clearReposeMenuTimer(): void {
+    if (this.reposeMenuTimer !== undefined) {
+      window.clearTimeout(this.reposeMenuTimer);
+      this.reposeMenuTimer = undefined;
+    }
   }
 
   private reportPlaybackEvent(
@@ -2330,7 +2502,10 @@ export class App implements OnDestroy {
       mediaSha256: media.sha256,
       mediaErrorCode: video.error?.code ?? null,
     };
-    this.agent.reportPlaybackEvent(event).pipe(catchError(() => of(null))).subscribe();
+    this.agent
+      .reportPlaybackEvent(event)
+      .pipe(catchError(() => of(null)))
+      .subscribe();
   }
 
   private currentVideoElement(): HTMLVideoElement | null {

@@ -133,6 +133,16 @@ export interface AgentHealth {
   diskUsedPercent: number;
 }
 
+export interface ReposeState {
+  schemaVersion: 1;
+  active: boolean;
+  source: 'manual' | 'schedule' | null;
+  enteredAt: string | null;
+  updatedAt: string;
+  overrideUntil: string | null;
+  schedule: { from: string; until: string };
+}
+
 export type ViewerPlaybackState =
   | 'empty'
   | 'photo'
@@ -141,6 +151,7 @@ export type ViewerPlaybackState =
   | 'paused'
   | 'waiting'
   | 'recovering'
+  | 'repose'
   | 'error';
 
 export interface ViewerPlaybackSnapshot {
@@ -154,7 +165,7 @@ export interface ViewerPlaybackSnapshot {
   paused: boolean;
   ended: boolean;
   seeking: boolean;
-  view: 'viewer' | 'overlay';
+  view: 'viewer' | 'overlay' | 'repose';
 }
 
 export interface ViewerPlaybackEvent extends ViewerPlaybackSnapshot {

@@ -438,7 +438,9 @@ export class App implements OnDestroy {
   private galleryLastDragAt = 0;
   private galleryClickResetTimer: number | undefined;
   private reposeMenuTimer: number | undefined;
-  private reposeVideoWasPlaying = false;
+  private reposeVideoResumeTimer: number | undefined;
+  private reposeVideoIntent: { mediaId: string; resume: boolean } | null = null;
+  private readonly videosPausedForRepose = new WeakSet<HTMLVideoElement>();
 
   constructor() {
     this.subscriptions.add(
@@ -548,6 +550,7 @@ export class App implements OnDestroy {
     this.clearGalleryClickReset();
     this.clearViewerPointers();
     this.clearReposeMenuTimer();
+    this.clearReposeVideoResumeTimer();
   }
 
   protected onPointerDown(event: PointerEvent): void {
@@ -1318,7 +1321,8 @@ export class App implements OnDestroy {
     if (this.currentMedia()?.id !== mediaId || this.preparingTransition() || this.crossfade()) {
       return;
     }
-    if (this.reposeActive()) {
+    const pausedForRepose = this.videosPausedForRepose.delete(video);
+    if (this.reposeActive() || pausedForRepose) {
       this.clearVideoWatchdog();
       this.updateVideoProgress(video);
       return;
@@ -2441,20 +2445,30 @@ export class App implements OnDestroy {
   private applyReposeState(state: ReposeState): void {
     const currentState = this.repose();
     if (currentState && Date.parse(state.updatedAt) < Date.parse(currentState.updatedAt)) return;
+    const initialized = currentState !== null;
     const previous = currentState?.active ?? true;
-    const video = this.currentVideoElement();
-    const videoWasPlaying = Boolean(video && !video.paused && !this.videoPaused());
     this.repose.set(state);
     if (!previous && state.active) {
-      this.enterRepose(videoWasPlaying);
+      this.enterRepose();
     } else if (previous && !state.active) {
-      this.leaveRepose();
+      this.leaveRepose(initialized);
     }
   }
 
-  private enterRepose(videoWasPlaying: boolean): void {
+  private enterRepose(): void {
+    const media = this.currentMedia();
     const video = this.currentVideoElement();
-    this.reposeVideoWasPlaying = videoWasPlaying;
+    this.clearReposeVideoResumeTimer();
+    this.reposeVideoIntent =
+      media?.kind === 'video'
+        ? {
+            mediaId: media.id,
+            // videoPaused represents an explicit user pause. A video that is
+            // loading or buffering still has an automatic-play intent even
+            // though the browser reports `paused` momentarily.
+            resume: !this.videoPaused() && !video?.ended,
+          }
+        : null;
     this.navigationGeneration += 1;
     this.preparingTransition.set(false);
     this.clearCrossfadeTimer();
@@ -2464,25 +2478,57 @@ export class App implements OnDestroy {
     this.clearPausedVideoAdvance();
     this.clearViewerPointers();
     this.activeView.set('viewer');
-    video?.pause();
+    if (video && !video.paused) {
+      this.videosPausedForRepose.add(video);
+      video.pause();
+    }
   }
 
-  private leaveRepose(): void {
+  private leaveRepose(deferVideoResume = true): void {
     this.hideReposeMenu();
     const media = this.currentMedia();
     if (media?.kind === 'video') {
-      if (this.reposeVideoWasPlaying || !this.videoPaused()) this.playCurrentVideo();
-      else if (this.videoPaused()) this.schedulePausedVideoAdvance(media.id);
+      const intent = this.reposeVideoIntent;
+      const shouldResume = intent?.mediaId === media.id ? intent.resume : !this.videoPaused();
+      if (shouldResume) {
+        this.videoPaused.set(false);
+        if (!deferVideoResume) {
+          this.playCurrentVideo();
+          this.reposeVideoIntent = null;
+          return;
+        }
+        this.videoPlaybackState.set('loading');
+        // Leave the repose state and let its pause event settle before asking
+        // Chromium to play again. This prevents a late pause event from
+        // winning the race against the resume request.
+        this.clearReposeVideoResumeTimer();
+        this.reposeVideoResumeTimer = window.setTimeout(() => {
+          this.reposeVideoResumeTimer = undefined;
+          if (this.currentMedia()?.id === media.id && !this.reposeActive()) {
+            this.playCurrentVideo();
+          }
+        }, 0);
+      } else {
+        this.clearReposeVideoResumeTimer();
+        this.schedulePausedVideoAdvance(media.id);
+      }
     } else {
       this.schedulePhotoAdvance(media, this.settings().photoDurationSeconds);
     }
-    this.reposeVideoWasPlaying = false;
+    this.reposeVideoIntent = null;
   }
 
   private clearReposeMenuTimer(): void {
     if (this.reposeMenuTimer !== undefined) {
       window.clearTimeout(this.reposeMenuTimer);
       this.reposeMenuTimer = undefined;
+    }
+  }
+
+  private clearReposeVideoResumeTimer(): void {
+    if (this.reposeVideoResumeTimer !== undefined) {
+      window.clearTimeout(this.reposeVideoResumeTimer);
+      this.reposeVideoResumeTimer = undefined;
     }
   }
 

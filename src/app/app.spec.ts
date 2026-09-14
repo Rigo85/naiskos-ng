@@ -301,6 +301,59 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('reanuda desde la misma posición el video que estaba reproduciéndose al entrar en reposo', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [video, photo] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    const compiled = fixture.nativeElement as HTMLElement;
+    const element = compiled.querySelector('video')!;
+    let paused = false;
+    Object.defineProperty(element, 'paused', { configurable: true, get: () => paused });
+    element.currentTime = 4.25;
+    const pause = vi.spyOn(element, 'pause').mockImplementation(() => {
+      paused = true;
+    });
+    const play = vi.spyOn(element, 'play').mockImplementation(() => {
+      paused = false;
+      element.dispatchEvent(new Event('playing'));
+      return Promise.resolve();
+    });
+
+    servedRepose = {
+      ...awakeRepose,
+      active: true,
+      source: 'manual',
+      enteredAt: '2026-09-14T16:00:00.000Z',
+      updatedAt: '2026-09-14T16:00:00.000Z',
+    };
+    await vi.advanceTimersByTimeAsync(1_000);
+    fixture.detectChanges();
+    expect(pause).toHaveBeenCalledOnce();
+    expect(element.currentTime).toBe(4.25);
+
+    const screen = compiled.querySelector('.repose-screen') as HTMLElement;
+    dispatchPointer(screen, 'pointerdown', 640, 400);
+    fixture.detectChanges();
+    (compiled.querySelector('.repose-menu__exit') as HTMLButtonElement).click();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    expect(play).toHaveBeenCalled();
+    expect(paused).toBe(false);
+    expect(element.currentTime).toBe(4.25);
+    // Chromium can deliver the pause event after the repose exit response.
+    // It must not turn the technical pause into a user pause.
+    element.dispatchEvent(new Event('pause'));
+    fixture.detectChanges();
+    expect(compiled.textContent).toContain('Pausar');
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('muestra la campana con contador y abre notificaciones persistentes', async () => {
     vi.useFakeTimers();
     servedNotifications = [

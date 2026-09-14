@@ -323,19 +323,26 @@ describe('App', () => {
       return Promise.resolve();
     });
 
-    servedRepose = {
-      ...awakeRepose,
-      active: true,
-      source: 'manual',
-      enteredAt: '2026-09-14T16:00:00.000Z',
-      updatedAt: '2026-09-14T16:00:00.000Z',
-    };
-    await vi.advanceTimersByTimeAsync(1_000);
+    const component = fixture.componentInstance as unknown as { openMainMenu(): void };
+    component.openMainMenu();
     fixture.detectChanges();
     expect(pause).toHaveBeenCalledOnce();
+    expect((fixture.componentInstance as any).videoPaused()).toBe(false);
     expect(element.currentTime).toBe(4.25);
 
+    const reposeButton = [...compiled.querySelectorAll<HTMLButtonElement>('.quick-menu button')].find(
+      (button) => button.textContent?.includes('Poner en reposo'),
+    )!;
+    reposeButton.click();
+    fixture.detectChanges();
+    const confirmButton = [
+      ...compiled.querySelectorAll<HTMLButtonElement>('.confirmation-dialog button'),
+    ].find((button) => button.textContent?.includes('Sí, poner en reposo'))!;
+    confirmButton.click();
+    fixture.detectChanges();
+
     const screen = compiled.querySelector('.repose-screen') as HTMLElement;
+    expect(screen).not.toBeNull();
     dispatchPointer(screen, 'pointerdown', 640, 400);
     fixture.detectChanges();
     (compiled.querySelector('.repose-menu__exit') as HTMLButtonElement).click();

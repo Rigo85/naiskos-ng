@@ -440,7 +440,7 @@ export class App implements OnDestroy {
   private reposeMenuTimer: number | undefined;
   private reposeVideoResumeTimer: number | undefined;
   private reposeVideoIntent: { mediaId: string; resume: boolean } | null = null;
-  private readonly videosPausedForRepose = new WeakSet<HTMLVideoElement>();
+  private readonly videosPausedInternally = new WeakSet<HTMLVideoElement>();
 
   constructor() {
     this.subscriptions.add(
@@ -1321,8 +1321,8 @@ export class App implements OnDestroy {
     if (this.currentMedia()?.id !== mediaId || this.preparingTransition() || this.crossfade()) {
       return;
     }
-    const pausedForRepose = this.videosPausedForRepose.delete(video);
-    if (this.reposeActive() || pausedForRepose) {
+    const pausedInternally = this.videosPausedInternally.delete(video);
+    if (this.reposeActive() || pausedInternally) {
       this.clearVideoWatchdog();
       this.updateVideoProgress(video);
       return;
@@ -2266,8 +2266,8 @@ export class App implements OnDestroy {
     const video = this.currentVideoElement();
     if (video && !video.paused) {
       this.clearVideoMonitoring();
+      this.videosPausedInternally.add(video);
       video.pause();
-      this.videoPaused.set(true);
       this.videoPlaybackState.set('paused');
     }
   }
@@ -2276,7 +2276,12 @@ export class App implements OnDestroy {
     if (this.reposeActive()) return;
     const video = this.currentVideoElement();
     if (video && this.currentMedia()?.kind === 'video') {
-      this.playCurrentVideo();
+      if (this.videoPaused()) {
+        const mediaId = this.currentMedia()?.id;
+        if (mediaId) this.schedulePausedVideoAdvance(mediaId);
+      } else {
+        this.playCurrentVideo();
+      }
     } else {
       this.schedulePhotoAdvance(this.currentMedia(), this.settings().photoDurationSeconds);
     }
@@ -2479,7 +2484,7 @@ export class App implements OnDestroy {
     this.clearViewerPointers();
     this.activeView.set('viewer');
     if (video && !video.paused) {
-      this.videosPausedForRepose.add(video);
+      this.videosPausedInternally.add(video);
       video.pause();
     }
   }

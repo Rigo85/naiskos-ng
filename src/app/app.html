@@ -51,7 +51,7 @@
     </section>
   }
 
-  @for (slide of renderedSlides(); track slide.item.id) {
+  @for (slide of renderedSlides(); track mediaIdentity(slide.item)) {
     <section
       class="stage"
       [class.stage--stable]="slide.phase === 'stable'"
@@ -71,8 +71,8 @@
           [src]="item.url"
           [alt]="item.caption || 'Fotografía de Naiskos'"
           draggable="false"
-          (load)="onPhotoLoaded(photoElement, item.id)"
-          (error)="onPhotoError(item.id)"
+          (load)="onPhotoLoaded(photoElement, mediaIdentity(item))"
+          (error)="onPhotoError(item.id, item.sha256)"
         />
       } @else {
         <video
@@ -80,6 +80,7 @@
           class="media media--video"
           [class.media--cover]="slide.fitMode === 'cover'"
           [attr.data-media-id]="item.id"
+          [attr.data-media-key]="mediaIdentity(item)"
           [src]="item.url"
           [poster]="item.posterUrl || ''"
           autoplay
@@ -87,7 +88,7 @@
           preload="auto"
           (loadstart)="onVideoLoadStart(videoElement, item.id)"
           (loadedmetadata)="onVideoLoaded(videoElement, item.id)"
-          (loadeddata)="onStagedVideoReady(videoElement, item.id)"
+          (loadeddata)="onStagedVideoReady(videoElement, mediaIdentity(item))"
           (playing)="onVideoPlaying(videoElement, item.id)"
           (pause)="onVideoPause(videoElement, item.id)"
           (timeupdate)="onVideoProgress(videoElement, item.id)"
@@ -95,7 +96,7 @@
           (stalled)="onVideoWaiting(videoElement, item.id, 'stalled')"
           (seeking)="onVideoSeeking(videoElement, item.id)"
           (seeked)="onVideoSeeked(videoElement, item.id)"
-          (error)="onVideoError(videoElement, item.id)"
+          (error)="onVideoError(videoElement, item.id, item.sha256)"
           (ended)="onVideoEnded(item.id)"
         ></video>
 

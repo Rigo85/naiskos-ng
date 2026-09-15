@@ -233,7 +233,9 @@ function setViewerBounds(element: HTMLElement): void {
   });
 }
 
-async function makeStagedMediaReady(fixture: ReturnType<typeof TestBed.createComponent<App>>): Promise<void> {
+async function makeStagedMediaReady(
+  fixture: ReturnType<typeof TestBed.createComponent<App>>,
+): Promise<void> {
   fixture.detectChanges();
   const compiled = fixture.nativeElement as HTMLElement;
   const image = compiled.querySelector('.stage--staging img') as HTMLImageElement | null;
@@ -280,11 +282,11 @@ describe('App', () => {
     dismissNotificationMock.mockClear();
     reportPlaybackEventMock.mockClear();
     reportMediaPreparationFailureMock.mockClear();
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
     await TestBed.configureTestingModule({
       imports: [App],
-      providers: [
-        { provide: AgentApi, useValue: agentApiMock },
-      ],
+      providers: [{ provide: AgentApi, useValue: agentApiMock }],
     }).compileComponents();
   });
 
@@ -306,6 +308,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
     const screen = compiled.querySelector('.repose-screen') as HTMLElement;
@@ -336,6 +339,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
     await makeStagedMediaReady(fixture);
 
@@ -360,9 +364,9 @@ describe('App', () => {
     expect((fixture.componentInstance as any).videoPaused()).toBe(false);
     expect(element.currentTime).toBe(4.25);
 
-    const reposeButton = [...compiled.querySelectorAll<HTMLButtonElement>('.quick-menu button')].find(
-      (button) => button.textContent?.includes('Poner en reposo'),
-    )!;
+    const reposeButton = [
+      ...compiled.querySelectorAll<HTMLButtonElement>('.quick-menu button'),
+    ].find((button) => button.textContent?.includes('Poner en reposo'))!;
     reposeButton.click();
     fixture.detectChanges();
     const confirmButton = [
@@ -420,6 +424,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
@@ -444,6 +449,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
@@ -464,6 +470,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
@@ -527,6 +534,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const compiled = fixture.nativeElement as HTMLElement;
     const frame = compiled.querySelector('.frame') as HTMLElement;
@@ -564,6 +572,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
@@ -594,6 +603,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       openMainMenu(): void;
@@ -630,6 +640,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       openGallery(): void;
@@ -679,6 +690,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       openGallery(): void;
@@ -706,6 +718,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as { openGallery(): void };
     component.openGallery();
@@ -745,6 +758,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as { openGallery(): void };
     component.openGallery();
@@ -774,6 +788,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as { openGallery(): void };
     component.openGallery();
@@ -810,6 +825,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as { openGallery(): void };
     component.openGallery();
@@ -838,6 +854,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as { openGallery(): void };
     component.openGallery();
@@ -875,6 +892,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     const component = fixture.componentInstance as unknown as { openGallery(): void };
     component.openGallery();
     fixture.detectChanges();
@@ -895,6 +913,7 @@ describe('App', () => {
     const deleteFixture = TestBed.createComponent(App);
     deleteFixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(deleteFixture);
     const deleteComponent = deleteFixture.componentInstance as unknown as { openGallery(): void };
     deleteComponent.openGallery();
     deleteFixture.detectChanges();
@@ -919,6 +938,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     const component = fixture.componentInstance as unknown as { openGallery(): void };
     component.openGallery();
     fixture.detectChanges();
@@ -953,6 +973,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as { openSettings(): void };
     component.openSettings();
@@ -985,6 +1006,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     servedManifest = manifest;
     await vi.advanceTimersByTimeAsync(2_000);
@@ -1003,6 +1025,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
@@ -1024,6 +1047,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
@@ -1058,6 +1082,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
@@ -1088,6 +1113,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
     await makeStagedMediaReady(fixture);
 
@@ -1117,6 +1143,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     (fixture.nativeElement as HTMLElement)
@@ -1142,6 +1169,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
@@ -1174,6 +1202,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     let element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
@@ -1239,6 +1268,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
@@ -1275,6 +1305,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
@@ -1295,6 +1326,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     fixture.detectChanges();
 
     const compiled = fixture.nativeElement as HTMLElement;
@@ -1342,6 +1374,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       navigate(direction: -1 | 1): void;
@@ -1375,6 +1408,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       navigate(direction: -1 | 1): void;
@@ -1403,6 +1437,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       navigate(direction: -1 | 1, preferredMediaId?: string, replaceActive?: boolean): void;
@@ -1446,6 +1481,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       navigate(direction: -1 | 1): void;
@@ -1487,6 +1523,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       navigate(direction: -1 | 1): void;
@@ -1520,6 +1557,7 @@ describe('App', () => {
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
       navigate(direction: -1 | 1): void;
@@ -1554,6 +1592,252 @@ describe('App', () => {
         .querySelector('.stage--stable img')
         ?.getAttribute('src'),
     ).toBe(photo.url);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('valida el primer manifiesto y omite un primer medio que no puede prepararse', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    const compiled = fixture.nativeElement as HTMLElement;
+    const failed = compiled.querySelector('.stage--staging img') as HTMLImageElement;
+    expect(compiled.querySelector('.stage--stable')).toBeNull();
+    expect(failed.getAttribute('src')).toBe(photo.url);
+    failed.dispatchEvent(new Event('error'));
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    expect(compiled.querySelector('.stage--staging img')?.getAttribute('src')).toBe(
+      secondPhoto.url,
+    );
+    await makeStagedMediaReady(fixture);
+    expect(compiled.querySelector('.stage--stable img')?.getAttribute('src')).toBe(secondPhoto.url);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('mantiene pendiente un manifiesto recibido con un panel abierto y lo valida al cerrar', async () => {
+    vi.useFakeTimers();
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    const component = fixture.componentInstance as any;
+    component.openMainMenu();
+    component.receiveManifest({
+      ...manifest,
+      version: 2,
+      media: [secondPhoto, photo],
+    });
+    fixture.detectChanges();
+
+    expect(component.manifest().version).toBe(1);
+    component.closeOverlay();
+    fixture.detectChanges();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--staging img')
+        ?.getAttribute('src'),
+    ).toBe(secondPhoto.url);
+    await finishStagedTransition(fixture);
+    expect(component.manifest().version).toBe(2);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('aplica una variante con el mismo id y un hash nuevo incluso si es el único medio', async () => {
+    vi.useFakeTimers();
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    const component = fixture.componentInstance as any;
+    const rotated = { ...photo, url: '/media/photo-1-rotated', sha256: 'def', rotationDegrees: 90 };
+    component.receiveManifest({ ...manifest, version: 2, media: [rotated] });
+    component.navigate(1);
+    fixture.detectChanges();
+
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--staging img')
+        ?.getAttribute('src'),
+    ).toBe(rotated.url);
+    await finishStagedTransition(fixture);
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--stable img')
+        ?.getAttribute('src'),
+    ).toBe(rotated.url);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('omite un video que falla durante la preparación y continúa con la fotografía siguiente', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, video, secondPhoto] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    const component = fixture.componentInstance as any;
+    component.navigate(1);
+    fixture.detectChanges();
+    const failed = (fixture.nativeElement as HTMLElement).querySelector(
+      '.stage--staging video',
+    ) as HTMLVideoElement;
+    Object.defineProperty(failed, 'error', { configurable: true, value: { code: 4 } });
+    failed.dispatchEvent(new Event('error'));
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--staging img')
+        ?.getAttribute('src'),
+    ).toBe(secondPhoto.url);
+    await finishStagedTransition(fixture);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('agota el timeout de un candidato y continúa sin bloquear la presentación', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    const component = fixture.componentInstance as any;
+    component.navigate(1);
+    fixture.detectChanges();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--staging img')
+        ?.getAttribute('src'),
+    ).toBe(secondPhoto.url);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    fixture.detectChanges();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--staging img')
+        ?.getAttribute('src'),
+    ).toBe(thirdPhoto.url);
+    await finishStagedTransition(fixture);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('sustituye de forma segura el manifiesto mientras otro candidato está preparándose', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    const component = fixture.componentInstance as any;
+    component.navigate(1);
+    fixture.detectChanges();
+    const stale = (fixture.nativeElement as HTMLElement).querySelector(
+      '.stage--staging img',
+    ) as HTMLImageElement;
+    component.receiveManifest({ ...manifest, version: 2, media: [thirdPhoto, photo] });
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--staging img')
+        ?.getAttribute('src'),
+    ).toBe(thirdPhoto.url);
+
+    Object.defineProperty(stale, 'decode', {
+      configurable: true,
+      value: vi.fn(() => Promise.resolve()),
+    });
+    stale.dispatchEvent(new Event('load'));
+    await vi.advanceTimersByTimeAsync(0);
+    await finishStagedTransition(fixture);
+    expect(component.manifest().version).toBe(2);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('cancela una preparación de video y un crossfade al entrar en reposo', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, video] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    const component = fixture.componentInstance as any;
+    component.navigate(1);
+    fixture.detectChanges();
+    const staleVideo = (fixture.nativeElement as HTMLElement).querySelector(
+      '.stage--staging video',
+    ) as HTMLVideoElement;
+    component.applyReposeState({
+      ...awakeRepose,
+      active: true,
+      source: 'schedule',
+      enteredAt: '2026-09-15T23:30:00.000Z',
+      updatedAt: '2026-09-15T23:30:00.000Z',
+    });
+    Object.defineProperty(staleVideo, 'readyState', { configurable: true, value: 2 });
+    staleVideo.dispatchEvent(new Event('loadeddata'));
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).querySelector('.stage--staging')).toBeNull();
+
+    component.applyReposeState({ ...awakeRepose, updatedAt: '2026-09-15T23:31:00.000Z' });
+    component.navigate(1);
+    fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
+    expect(
+      (fixture.nativeElement as HTMLElement).querySelector('.stage--incoming video'),
+    ).not.toBeNull();
+    component.applyReposeState({
+      ...awakeRepose,
+      active: true,
+      source: 'schedule',
+      enteredAt: '2026-09-15T23:32:00.000Z',
+      updatedAt: '2026-09-15T23:32:00.000Z',
+    });
+    await vi.advanceTimersByTimeAsync(450);
+    fixture.detectChanges();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--stable img')
+        ?.getAttribute('src'),
+    ).toBe(photo.url);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('no reescribe un checkpoint fotográfico idéntico en cada heartbeat', async () => {
+    vi.useFakeTimers();
+    servedManifest = {
+      ...manifest,
+      settings: { ...DEFAULT_FRAME_SETTINGS, photoDurationSeconds: 86_400 },
+    };
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    const initialWrites = writes.mock.calls.filter(
+      ([key]) => key === 'naiskos.playback-checkpoint.v1',
+    ).length;
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    const finalWrites = writes.mock.calls.filter(
+      ([key]) => key === 'naiskos.playback-checkpoint.v1',
+    ).length;
+    expect(finalWrites).toBe(initialWrites);
     fixture.destroy();
     vi.useRealTimers();
   });

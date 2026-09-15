@@ -44,10 +44,7 @@ import {
   pointDistance,
   pointMidpoint,
 } from './core/photo-zoom';
-import {
-  adjacentIndex,
-  orderManifestMedia,
-} from './core/slideshow-policy';
+import { adjacentIndex, orderManifestMedia } from './core/slideshow-policy';
 import {
   MediaFailureRegistry,
   NavigationCandidate,
@@ -78,17 +75,15 @@ interface CrossfadeState {
 
 interface StagingState {
   operationId: number;
-  outgoing: MediaItem;
-  outgoingFitMode: FitMode;
+  outgoing: MediaItem | null;
+  outgoingFitMode: FitMode | null;
   target: NavigationCandidate;
   incomingFitMode: FitMode;
   startedAt: number;
 }
 
 interface StagingAttempt {
-  operationId: number;
-  mediaId: string;
-  timeout: number;
+  mediaKey: string;
   resolve: () => void;
   reject: (error: Error) => void;
   cleanup: () => void;
@@ -168,6 +163,7 @@ const VIDEO_QUARANTINE_FAILURES = 2;
 const VIDEO_QUARANTINE_MS = 30 * 60_000;
 const VIEWER_HEARTBEAT_INTERVAL_MS = 15_000;
 const MEDIA_PREPARATION_TIMEOUT_MS = 5_000;
+const PLAYBACK_CHECKPOINT_INTERVAL_MS = 30_000;
 const NAVIGATION_SEARCH_SLICE_MS = 10_000;
 const NAVIGATION_CONTINUATION_DELAY_MS = 250;
 const NAVIGATION_RETRY_DELAY_MS = 30_000;
@@ -417,11 +413,15 @@ export class App implements OnDestroy {
     const staging = this.staging();
     if (staging) {
       return [
-        {
-          item: staging.outgoing,
-          phase: 'stable',
-          fitMode: staging.outgoingFitMode,
-        },
+        ...(staging.outgoing && staging.outgoingFitMode
+          ? [
+              {
+                item: staging.outgoing,
+                phase: 'stable' as const,
+                fitMode: staging.outgoingFitMode,
+              },
+            ]
+          : []),
         {
           item: staging.target.item,
           phase: 'staging',
@@ -482,10 +482,11 @@ export class App implements OnDestroy {
   private readonly quarantinedVideos = new Map<string, number>();
   private readonly unavailableMedia = new MediaFailureRegistry(MEDIA_QUARANTINE_MS);
   private navigationGeneration = 0;
-  private navigationController: AbortController | null = null;
   private stagingAttempt: StagingAttempt | null = null;
   private navigationFailures = 0;
   private readonly playbackCheckpoint = this.readPlaybackCheckpoint();
+  private lastPlaybackCheckpointSignature: string | null = null;
+  private lastPlaybackCheckpointWriteAt = 0;
   private restoredVideoCheckpointKey: string | null = null;
   private lastTapAt = 0;
   private lastTapSide: 'left' | 'right' | null = null;
@@ -1206,7 +1207,7 @@ export class App implements OnDestroy {
   protected closeOverlay(): void {
     this.closeGalleryOptions();
     this.activeView.set('viewer');
-    this.resumeCurrentCycle();
+    this.applyPendingManifestOrResume();
   }
 
   protected showGalleryItem(mediaId: string, event?: MouseEvent): void {
@@ -1335,7 +1336,7 @@ export class App implements OnDestroy {
       checkpointKey !== this.restoredVideoCheckpointKey &&
       checkpoint.mediaId === mediaId &&
       this.currentMedia()?.sha256 === checkpoint.mediaSha256 &&
-      Number.isFinite(video.duration)
+      Number.isFinite(video.duration),
     );
     if (restoresUserPause && checkpoint) {
       if (checkpoint.currentTime > 0) {
@@ -1481,11 +1482,20 @@ export class App implements OnDestroy {
     }
   }
 
-  protected onVideoError(video: HTMLVideoElement, mediaId: string): void {
-    if (this.stagingAttempt?.mediaId === mediaId) {
+  protected onVideoError(video: HTMLVideoElement, mediaId: string, mediaSha256: string): void {
+    if (this.stagingAttempt?.mediaKey === `${mediaId}:${mediaSha256}`) {
       this.settleStagingAttempt(
         new Error(`El video no se pudo preparar (código ${video.error?.code ?? 0}).`),
       );
+      return;
+    }
+    const failedKey = `${mediaId}:${mediaSha256}`;
+    const transition = this.crossfade();
+    if (transition && this.mediaIdentity(transition.incoming) === failedKey) {
+      this.cancelCrossfade();
+      this.unavailableMedia.quarantine(transition.incoming);
+      this.reportPreparationFailure(transition.incoming, new Error('Falló el video entrante.'));
+      this.navigate(1, undefined, true);
       return;
     }
     if (!this.isCurrentStableVideo(video, mediaId)) return;
@@ -1845,30 +1855,7 @@ export class App implements OnDestroy {
         this.galleryOperation.set(null);
       }
     }
-    if (!current || current.media.length === 0) {
-      this.resetPhotoTransform();
-      this.manifest.set(orderedNext);
-      this.pendingManifest.set(null);
-      const checkpoint = this.playbackCheckpoint;
-      const checkpointIndex = checkpoint && checkpoint.frameId === orderedNext.frameId
-        ? orderedNext.media.findIndex(
-            (item) => item.id === checkpoint.mediaId && item.sha256 === checkpoint.mediaSha256,
-          )
-        : -1;
-      this.currentIndex.set(checkpointIndex >= 0 ? checkpointIndex : 0);
-      return;
-    }
     if (this.overlayOpen()) {
-      const currentMediaId = this.currentMedia()?.id;
-      this.manifest.set(orderedNext);
-      this.pendingManifest.set(null);
-      const preservedIndex = currentMediaId
-        ? orderedNext.media.findIndex((item) => item.id === currentMediaId)
-        : -1;
-      if (preservedIndex < 0) {
-        this.resetPhotoTransform();
-      }
-      this.currentIndex.set(preservedIndex >= 0 ? preservedIndex : 0);
       const optionItem = this.galleryOptionsItem();
       if (optionItem) {
         const updatedItem = orderedNext.media.find((item) => item.id === optionItem.id);
@@ -1890,9 +1877,36 @@ export class App implements OnDestroy {
           this.closeGalleryOptions();
         }
       }
+      this.pendingManifest.set(orderedNext);
+      return;
+    }
+    if (!current || current.media.length === 0) {
+      this.resetPhotoTransform();
+      if (!current) {
+        this.manifest.set({ ...orderedNext, media: [] });
+      }
+      this.pendingManifest.set(orderedNext);
+      if (orderedNext.media.length === 0) {
+        this.commitEmptyManifest(orderedNext);
+        return;
+      }
+      if (!this.reposeActive()) {
+        const checkpoint = this.playbackCheckpoint;
+        const preferredMediaId =
+          checkpoint && checkpoint.frameId === orderedNext.frameId
+            ? orderedNext.media.find(
+                (item) => item.id === checkpoint.mediaId && item.sha256 === checkpoint.mediaSha256,
+              )?.id
+            : undefined;
+        this.navigate(1, preferredMediaId);
+      }
       return;
     }
     this.pendingManifest.set(orderedNext);
+    if (orderedNext.media.length === 0) {
+      if (!this.reposeActive()) this.commitEmptyManifest(orderedNext);
+      return;
+    }
     if (this.preparingTransition()) {
       this.cancelNavigation();
       if (!this.reposeActive()) window.setTimeout(() => this.navigate(1), 0);
@@ -1936,11 +1950,7 @@ export class App implements OnDestroy {
     }
   }
 
-  private navigate(
-    direction: -1 | 1,
-    preferredMediaId?: string,
-    replaceActive = false,
-  ): void {
+  private navigate(direction: -1 | 1, preferredMediaId?: string, replaceActive = false): void {
     if (this.overlayOpen() || this.reposeActive()) return;
     this.clearNavigationRetry();
     if (this.crossfade()) {
@@ -1951,7 +1961,7 @@ export class App implements OnDestroy {
       this.cancelNavigation();
     }
     const active = this.manifest();
-    if (!active?.media.length) return;
+    if (!active || !(this.pendingManifest()?.media.length || active.media.length)) return;
 
     this.clearPhotoTimer();
     this.clearVideoMonitoring();
@@ -1966,18 +1976,16 @@ export class App implements OnDestroy {
   ): Promise<void> {
     const active = this.manifest();
     const outgoing = this.currentMedia();
-    if (!active || !outgoing) return;
+    if (!active) return;
 
     const generation = ++this.navigationGeneration;
-    const controller = new AbortController();
-    this.navigationController = controller;
-    const outgoingFitMode = this.fitModeFor(outgoing, active.settings);
+    const outgoingFitMode = outgoing ? this.fitModeFor(outgoing, active.settings) : null;
     this.preparingTransition.set(true);
     const candidates = navigationPlan({
       active,
       pending: this.pendingManifest(),
       currentIndex: this.currentIndex(),
-      currentMediaId: outgoing.id,
+      currentMediaId: outgoing?.id ?? null,
       direction,
       ...(preferredMediaId ? { preferredMediaId } : {}),
     });
@@ -1987,8 +1995,12 @@ export class App implements OnDestroy {
     let exhausted = true;
 
     for (const candidate of candidates) {
-      if (candidate.item.id === outgoing.id) {
+      if (outgoing && this.mediaIdentity(candidate.item) === this.mediaIdentity(outgoing)) {
         if (candidates.length === 1) {
+          if (candidate.manifest.version !== active.version) {
+            this.commitPreparedCandidate(generation, candidate, false);
+            return;
+          }
           const onlyVideo = outgoing.kind === 'video' ? this.currentVideoElement() : null;
           if (onlyVideo && (onlyVideo.ended || onlyVideo.currentTime > 0)) {
             onlyVideo.currentTime = 0;
@@ -2012,13 +2024,7 @@ export class App implements OnDestroy {
       }
       attempted += 1;
       try {
-        await this.stageCandidate(
-          generation,
-          outgoing,
-          outgoingFitMode,
-          candidate,
-          controller.signal,
-        );
+        await this.stageCandidate(generation, outgoing, outgoingFitMode, candidate);
       } catch (error) {
         if (error instanceof NavigationCancelledError || generation !== this.navigationGeneration) {
           return;
@@ -2028,13 +2034,17 @@ export class App implements OnDestroy {
         this.reportPreparationFailure(candidate.item, error);
         continue;
       }
-      if (generation !== this.navigationGeneration || controller.signal.aborted) return;
+      if (generation !== this.navigationGeneration) return;
       this.unavailableMedia.clear(candidate.item);
-      this.beginCrossfade(generation, outgoing, outgoingFitMode, candidate);
+      if (outgoing && outgoingFitMode) {
+        this.beginCrossfade(generation, outgoing, outgoingFitMode, candidate);
+      } else {
+        this.commitPreparedCandidate(generation, candidate);
+      }
       return;
     }
 
-    if (generation !== this.navigationGeneration || controller.signal.aborted) return;
+    if (generation !== this.navigationGeneration) return;
     this.finishNavigationPreparation(generation);
     this.resumeCurrentCycle();
     this.scheduleNavigationRetry(
@@ -2045,31 +2055,25 @@ export class App implements OnDestroy {
 
   private stageCandidate(
     operationId: number,
-    outgoing: MediaItem,
-    outgoingFitMode: FitMode,
+    outgoing: MediaItem | null,
+    outgoingFitMode: FitMode | null,
     target: NavigationCandidate,
-    abortSignal: AbortSignal,
   ): Promise<void> {
     this.discardStagingAttempt(new NavigationCancelledError('Preparación sustituida.'));
     return new Promise<void>((resolve, reject) => {
-      const abort = () => this.settleStagingAttempt(new NavigationCancelledError('Cancelada.'));
       const timeout = window.setTimeout(
         () => this.settleStagingAttempt(new Error('Tiempo de preparación agotado.')),
         MEDIA_PREPARATION_TIMEOUT_MS,
       );
       const cleanup = () => {
         window.clearTimeout(timeout);
-        abortSignal.removeEventListener('abort', abort);
       };
       this.stagingAttempt = {
-        operationId,
-        mediaId: target.item.id,
-        timeout,
+        mediaKey: this.mediaIdentity(target.item),
         resolve,
         reject,
         cleanup,
       };
-      abortSignal.addEventListener('abort', abort, { once: true });
       this.staging.set({
         operationId,
         outgoing,
@@ -2078,8 +2082,55 @@ export class App implements OnDestroy {
         incomingFitMode: this.fitModeFor(target.item, target.manifest.settings),
         startedAt: performance.now(),
       });
-      if (abortSignal.aborted) abort();
     });
+  }
+
+  private commitPreparedCandidate(
+    generation: number,
+    target: NavigationCandidate,
+    resetTransform = true,
+  ): void {
+    if (generation !== this.navigationGeneration) return;
+    if (resetTransform) this.resetPhotoTransform();
+    this.manifest.set(target.manifest);
+    if (this.pendingManifest()?.version === target.manifest.version) {
+      this.pendingManifest.set(null);
+    }
+    this.currentIndex.set(target.index);
+    this.staging.set(null);
+    this.preparingTransition.set(false);
+    this.connectionWarning.set(null);
+    this.videoPaused.set(false);
+    this.persistPlaybackCheckpoint(true);
+    if (target.item.kind === 'video') {
+      window.setTimeout(() => this.playCurrentVideo(), 0);
+    }
+  }
+
+  private commitEmptyManifest(manifest: FrameManifest): void {
+    this.cancelNavigation();
+    this.cancelCrossfade();
+    this.resetPhotoTransform();
+    this.manifest.set(manifest);
+    if (this.pendingManifest()?.version === manifest.version) {
+      this.pendingManifest.set(null);
+    }
+    this.currentIndex.set(0);
+    this.videoPaused.set(false);
+    this.videoPlaybackState.set('empty');
+  }
+
+  private applyPendingManifestOrResume(): void {
+    const pending = this.pendingManifest();
+    if (!pending) {
+      this.resumeCurrentCycle();
+      return;
+    }
+    if (pending.media.length === 0) {
+      this.commitEmptyManifest(pending);
+      return;
+    }
+    this.navigate(1, undefined, true);
   }
 
   private settleStagingAttempt(error?: Error): void {
@@ -2116,7 +2167,6 @@ export class App implements OnDestroy {
       startedAt: performance.now(),
     });
     this.staging.set(null);
-    this.navigationController = null;
     this.preparingTransition.set(false);
     this.connectionWarning.set(null);
     this.clearCrossfadeTimer();
@@ -2125,15 +2175,12 @@ export class App implements OnDestroy {
 
   private finishNavigationPreparation(generation: number): void {
     if (generation !== this.navigationGeneration) return;
-    this.navigationController = null;
     this.discardStagingAttempt(new NavigationCancelledError('Preparación finalizada.'));
     this.preparingTransition.set(false);
   }
 
   private cancelNavigation(): void {
     this.navigationGeneration += 1;
-    this.navigationController?.abort();
-    this.navigationController = null;
     this.discardStagingAttempt(new NavigationCancelledError('Preparación cancelada.'));
     this.preparingTransition.set(false);
     this.clearNavigationRetry();
@@ -2179,9 +2226,9 @@ export class App implements OnDestroy {
     this.crossfade.set(null);
   }
 
-  protected onPhotoLoaded(image: HTMLImageElement, mediaId: string): void {
+  protected onPhotoLoaded(image: HTMLImageElement, mediaKey: string): void {
     const attempt = this.stagingAttempt;
-    if (!attempt || attempt.mediaId !== mediaId) return;
+    if (!attempt || attempt.mediaKey !== mediaKey) return;
     void (typeof image.decode === 'function' ? image.decode() : Promise.resolve()).then(
       () => {
         if (this.stagingAttempt === attempt) this.settleStagingAttempt();
@@ -2196,26 +2243,40 @@ export class App implements OnDestroy {
     );
   }
 
-  protected onPhotoError(mediaId: string): void {
+  protected onPhotoError(mediaId: string, mediaSha256: string): void {
+    const failedKey = `${mediaId}:${mediaSha256}`;
     const attempt = this.stagingAttempt;
-    if (attempt?.mediaId === mediaId) {
+    if (attempt?.mediaKey === failedKey) {
       this.settleStagingAttempt(new Error('La fotografía no se pudo cargar.'));
       return;
     }
+    const transition = this.crossfade();
+    if (transition && this.mediaIdentity(transition.incoming) === failedKey) {
+      this.cancelCrossfade();
+      this.unavailableMedia.quarantine(transition.incoming);
+      this.reportPreparationFailure(
+        transition.incoming,
+        new Error('Falló la fotografía entrante.'),
+      );
+      this.navigate(1, undefined, true);
+      return;
+    }
     const current = this.currentMedia();
-    if (current?.id !== mediaId || this.overlayOpen() || this.reposeActive()) return;
+    if (
+      !current ||
+      this.mediaIdentity(current) !== failedKey ||
+      this.overlayOpen() ||
+      this.reposeActive()
+    )
+      return;
     this.unavailableMedia.quarantine(current);
     this.reportPreparationFailure(current, new Error('Falló la fotografía visible.'));
     this.navigate(1, undefined, true);
   }
 
-  protected onStagedVideoReady(video: HTMLVideoElement, mediaId: string): void {
+  protected onStagedVideoReady(video: HTMLVideoElement, mediaKey: string): void {
     const attempt = this.stagingAttempt;
-    if (
-      !attempt ||
-      attempt.mediaId !== mediaId ||
-      video.readyState < 2
-    ) {
+    if (!attempt || attempt.mediaKey !== mediaKey || video.readyState < 2) {
       return;
     }
     this.settleStagingAttempt();
@@ -2233,7 +2294,7 @@ export class App implements OnDestroy {
     this.currentIndex.set(transition.target.index);
     this.crossfade.set(null);
     this.videoPaused.set(false);
-    this.persistPlaybackCheckpoint();
+    this.persistPlaybackCheckpoint(true);
     if (this.currentMedia()?.kind === 'video') {
       window.setTimeout(() => this.playCurrentVideo(), 0);
     }
@@ -2601,10 +2662,11 @@ export class App implements OnDestroy {
   }
 
   private isCurrentStableVideo(video: HTMLVideoElement, mediaId: string): boolean {
+    const current = this.currentMedia();
     return (
-      this.currentMedia()?.kind === 'video' &&
-      this.currentMedia()?.id === mediaId &&
-      video.dataset['mediaId'] === mediaId &&
+      current?.kind === 'video' &&
+      current.id === mediaId &&
+      video.dataset['mediaKey'] === this.mediaIdentity(current) &&
       !this.preparingTransition() &&
       !this.crossfade() &&
       !this.overlayOpen() &&
@@ -2709,22 +2771,42 @@ export class App implements OnDestroy {
     }
   }
 
-  private persistPlaybackCheckpoint(): void {
+  private persistPlaybackCheckpoint(force = false): void {
     const manifest = this.manifest();
     const media = this.currentMedia();
     if (!manifest || !media) return;
     const video = media.kind === 'video' ? this.currentVideoElement() : null;
+    const currentTime = video && Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    const userPaused = media.kind === 'video' && this.videoPaused();
+    const signature = [
+      manifest.frameId,
+      media.id,
+      media.sha256,
+      media.kind,
+      media.kind === 'video' ? Math.floor(currentTime) : 0,
+      userPaused ? 1 : 0,
+    ].join(':');
+    const now = Date.now();
+    if (
+      !force &&
+      (signature === this.lastPlaybackCheckpointSignature ||
+        now - this.lastPlaybackCheckpointWriteAt < PLAYBACK_CHECKPOINT_INTERVAL_MS)
+    ) {
+      return;
+    }
     const checkpoint: PlaybackCheckpoint = {
       frameId: manifest.frameId,
       mediaId: media.id,
       mediaSha256: media.sha256,
       mediaKind: media.kind,
-      currentTime: video && Number.isFinite(video.currentTime) ? video.currentTime : 0,
-      userPaused: media.kind === 'video' && this.videoPaused(),
+      currentTime,
+      userPaused,
       updatedAt: new Date().toISOString(),
     };
     try {
       window.localStorage.setItem(PLAYBACK_CHECKPOINT_KEY, JSON.stringify(checkpoint));
+      this.lastPlaybackCheckpointSignature = signature;
+      this.lastPlaybackCheckpointWriteAt = now;
     } catch {
       // La persistencia mejora la continuidad, pero nunca bloquea la presentación.
     }
@@ -2746,7 +2828,7 @@ export class App implements OnDestroy {
   private enterRepose(): void {
     const media = this.currentMedia();
     const video = this.currentVideoElement();
-    this.persistPlaybackCheckpoint();
+    this.persistPlaybackCheckpoint(true);
     this.clearReposeVideoResumeTimer();
     this.reposeVideoIntent =
       media?.kind === 'video'
@@ -2773,6 +2855,11 @@ export class App implements OnDestroy {
 
   private leaveRepose(deferVideoResume = true): void {
     this.hideReposeMenu();
+    if (this.pendingManifest()) {
+      this.reposeVideoIntent = null;
+      this.applyPendingManifestOrResume();
+      return;
+    }
     const media = this.currentMedia();
     if (media?.kind === 'video') {
       const intent = this.reposeVideoIntent;
@@ -2842,16 +2929,21 @@ export class App implements OnDestroy {
   }
 
   private currentVideoElement(): HTMLVideoElement | null {
-    const mediaId = this.currentMedia()?.id;
-    if (!mediaId) {
+    const media = this.currentMedia();
+    if (!media) {
       return null;
     }
+    const mediaKey = this.mediaIdentity(media);
     return (
       this.videoElements
         ?.toArray()
         .map((element) => element.nativeElement)
-        .find((video) => video.dataset['mediaId'] === mediaId) ?? null
+        .find((video) => video.dataset['mediaKey'] === mediaKey) ?? null
     );
+  }
+
+  protected mediaIdentity(item: MediaItem): string {
+    return `${item.id}:${item.sha256}`;
   }
 
   private fitModeFor(item: MediaItem, settings: FrameSettings): FitMode {

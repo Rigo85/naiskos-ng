@@ -4,7 +4,6 @@ import { vi } from 'vitest';
 
 import { App } from './app';
 import { AgentApi } from './core/agent-api';
-import { MediaReadiness } from './core/media-readiness';
 import {
   DEFAULT_FRAME_SETTINGS,
   FrameManifest,
@@ -108,6 +107,7 @@ const deleteMediaBatchMock = vi.fn((ids: string[]) => of({ accepted: true, count
 const markAllNotificationsReadMock = vi.fn(() => of({ updated: 1 }));
 const dismissNotificationMock = vi.fn(() => of(undefined));
 const reportPlaybackEventMock = vi.fn(() => of({ accepted: true }));
+const reportMediaPreparationFailureMock = vi.fn(() => of({ accepted: true }));
 const awakeRepose: ReposeState = {
   schemaVersion: 1,
   active: false,
@@ -197,10 +197,7 @@ const agentApiMock = {
   setRepose: setReposeMock,
   reportViewerHeartbeat: () => of(undefined),
   reportPlaybackEvent: reportPlaybackEventMock,
-};
-
-const mediaReadinessMock = {
-  prepare: vi.fn(() => Promise.resolve()),
+  reportMediaPreparationFailure: reportMediaPreparationFailureMock,
 };
 
 function dispatchPointer(
@@ -236,13 +233,45 @@ function setViewerBounds(element: HTMLElement): void {
   });
 }
 
+async function makeStagedMediaReady(fixture: ReturnType<typeof TestBed.createComponent<App>>): Promise<void> {
+  fixture.detectChanges();
+  const compiled = fixture.nativeElement as HTMLElement;
+  const image = compiled.querySelector('.stage--staging img') as HTMLImageElement | null;
+  if (image) {
+    Object.defineProperty(image, 'decode', {
+      configurable: true,
+      value: vi.fn(() => Promise.resolve()),
+    });
+    image.dispatchEvent(new Event('load'));
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    return;
+  }
+  const videoElement = compiled.querySelector('.stage--staging video') as HTMLVideoElement | null;
+  if (videoElement) {
+    Object.defineProperty(videoElement, 'readyState', { configurable: true, value: 2 });
+    videoElement.dispatchEvent(new Event('loadeddata'));
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+  }
+}
+
+async function finishStagedTransition(
+  fixture: ReturnType<typeof TestBed.createComponent<App>>,
+  durationMs = 450,
+): Promise<void> {
+  await makeStagedMediaReady(fixture);
+  await vi.advanceTimersByTimeAsync(durationMs);
+  fixture.detectChanges();
+}
+
 describe('App', () => {
   beforeEach(async () => {
     servedManifest = manifest;
     servedNotifications = [];
     servedRepose = awakeRepose;
+    window.localStorage.clear();
     setReposeMock.mockClear();
-    mediaReadinessMock.prepare.mockClear();
     updateMediaMock.mockClear();
     rotateMediaMock.mockClear();
     deleteMediaMock.mockClear();
@@ -250,11 +279,11 @@ describe('App', () => {
     markAllNotificationsReadMock.mockClear();
     dismissNotificationMock.mockClear();
     reportPlaybackEventMock.mockClear();
+    reportMediaPreparationFailureMock.mockClear();
     await TestBed.configureTestingModule({
       imports: [App],
       providers: [
         { provide: AgentApi, useValue: agentApiMock },
-        { provide: MediaReadiness, useValue: mediaReadinessMock },
       ],
     }).compileComponents();
   });
@@ -308,6 +337,7 @@ describe('App', () => {
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
 
     const compiled = fixture.nativeElement as HTMLElement;
     const element = compiled.querySelector('video')!;
@@ -470,6 +500,7 @@ describe('App', () => {
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
     expect(compiled.querySelector('.stage--incoming img')?.getAttribute('src')).toBe(
       secondPhoto.url,
     );
@@ -519,6 +550,7 @@ describe('App', () => {
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
     expect(compiled.querySelector('.stage--incoming img')?.getAttribute('src')).toBe(
       secondPhoto.url,
     );
@@ -687,6 +719,7 @@ describe('App', () => {
     (compiled.querySelector('.gallery-card__open') as HTMLButtonElement).click();
     fixture.detectChanges();
     expect(compiled.querySelector('.workspace-overlay')).toBeNull();
+    await finishStagedTransition(fixture);
     expect(compiled.querySelector('.stage--stable video')?.getAttribute('src')).toBe(video.url);
     fixture.destroy();
     vi.useRealTimers();
@@ -765,6 +798,7 @@ describe('App', () => {
     secondCard.click();
     fixture.detectChanges();
     expect(compiled.querySelector('.workspace-overlay')).toBeNull();
+    await finishStagedTransition(fixture);
     expect(compiled.querySelector('.stage--stable img')?.getAttribute('src')).toBe(secondPhoto.url);
     fixture.destroy();
     vi.useRealTimers();
@@ -792,6 +826,7 @@ describe('App', () => {
     secondCard.click();
     fixture.detectChanges();
     expect(compiled.querySelector('.workspace-overlay')).toBeNull();
+    await finishStagedTransition(fixture);
     expect(compiled.querySelector('.stage--stable img')?.getAttribute('src')).toBe(secondPhoto.url);
     fixture.destroy();
     vi.useRealTimers();
@@ -1037,6 +1072,7 @@ describe('App', () => {
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
     expect(compiled.querySelector('.stage--incoming img')?.getAttribute('src')).toBe(photo.url);
     fixture.destroy();
     vi.useRealTimers();
@@ -1053,6 +1089,7 @@ describe('App', () => {
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
 
     const compiled = fixture.nativeElement as HTMLElement;
     const element = compiled.querySelector('video')!;
@@ -1087,6 +1124,7 @@ describe('App', () => {
       ?.dispatchEvent(new Event('ended'));
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
 
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelector('.stage--incoming img')?.getAttribute('src')).toBe(photo.url);
@@ -1113,6 +1151,7 @@ describe('App', () => {
     element.dispatchEvent(new Event('timeupdate'));
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
 
     expect(
       (fixture.nativeElement as HTMLElement)
@@ -1141,11 +1180,13 @@ describe('App', () => {
     element.dispatchEvent(new Event('ended'));
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
     const incomingVideo = (fixture.nativeElement as HTMLElement).querySelector(
       '.stage--incoming video',
     ) as HTMLVideoElement;
     vi.spyOn(incomingVideo, 'play').mockResolvedValue();
     await vi.advanceTimersByTimeAsync(450);
+    await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
 
     element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
@@ -1158,7 +1199,7 @@ describe('App', () => {
     fixture.detectChanges();
     expect((fixture.nativeElement as HTMLElement).querySelector('.stage--incoming img')).toBeNull();
 
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(10);
     fixture.detectChanges();
     expect(element.src).toContain('naiskosRetry=');
     expect(reportPlaybackEventMock).toHaveBeenCalledWith(
@@ -1175,6 +1216,7 @@ describe('App', () => {
     await vi.advanceTimersByTimeAsync(1);
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
 
     expect(
       (fixture.nativeElement as HTMLElement)
@@ -1307,6 +1349,7 @@ describe('App', () => {
     component.navigate(1);
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
+    await makeStagedMediaReady(fixture);
 
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelectorAll('.stage')).toHaveLength(2);
@@ -1338,6 +1381,7 @@ describe('App', () => {
     };
     component.navigate(1);
     await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
     component.navigate(1);
     component.navigate(-1);
 
@@ -1353,16 +1397,52 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
-  it('ignora un avance manual mientras el cambio anterior se está preparando', async () => {
+  it('sustituye una preparación manual e ignora el evento tardío de la anterior', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
-    let finishPreparation: (() => void) | undefined;
-    mediaReadinessMock.prepare.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          finishPreparation = resolve;
-        }),
-    );
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const component = fixture.componentInstance as unknown as {
+      navigate(direction: -1 | 1, preferredMediaId?: string, replaceActive?: boolean): void;
+    };
+    component.navigate(1);
+    fixture.detectChanges();
+    const staleImage = (fixture.nativeElement as HTMLElement).querySelector(
+      '.stage--staging img',
+    ) as HTMLImageElement;
+    component.navigate(-1, undefined, true);
+    fixture.detectChanges();
+    Object.defineProperty(staleImage, 'decode', {
+      configurable: true,
+      value: vi.fn(() => Promise.resolve()),
+    });
+    staleImage.dispatchEvent(new Event('load'));
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--incoming img')
+        ?.getAttribute('src'),
+    ).toBe(thirdPhoto.url);
+
+    await vi.advanceTimersByTimeAsync(450);
+    fixture.detectChanges();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--stable img')
+        ?.getAttribute('src'),
+    ).toBe(thirdPhoto.url);
+    expect((fixture.nativeElement as HTMLElement).querySelector('.stage--incoming')).toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('descarta un medio que falla y muestra el siguiente que sí queda listo', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(0);
@@ -1371,25 +1451,109 @@ describe('App', () => {
       navigate(direction: -1 | 1): void;
     };
     component.navigate(1);
-    component.navigate(1);
-    finishPreparation?.();
+    fixture.detectChanges();
+    const failed = (fixture.nativeElement as HTMLElement).querySelector(
+      '.stage--staging img',
+    ) as HTMLImageElement;
+    expect(failed.getAttribute('src')).toBe(secondPhoto.url);
+    failed.dispatchEvent(new Event('error'));
     await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
 
     expect(
       (fixture.nativeElement as HTMLElement)
-        .querySelector('.stage--incoming img')
+        .querySelector('.stage--staging img')
         ?.getAttribute('src'),
-    ).toBe(secondPhoto.url);
-
-    await vi.advanceTimersByTimeAsync(450);
-    fixture.detectChanges();
+    ).toBe(thirdPhoto.url);
+    await finishStagedTransition(fixture);
     expect(
       (fixture.nativeElement as HTMLElement)
         .querySelector('.stage--stable img')
         ?.getAttribute('src'),
-    ).toBe(secondPhoto.url);
+    ).toBe(thirdPhoto.url);
+    expect(reportMediaPreparationFailureMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'viewer.media.preparation-failed',
+        mediaId: secondPhoto.id,
+      }),
+    );
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('conserva el último medio confirmado si todos los candidatos fallan', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const component = fixture.componentInstance as unknown as {
+      navigate(direction: -1 | 1): void;
+    };
+    component.navigate(1);
+    for (const expected of [secondPhoto, thirdPhoto]) {
+      fixture.detectChanges();
+      const staged = (fixture.nativeElement as HTMLElement).querySelector(
+        '.stage--staging img',
+      ) as HTMLImageElement;
+      expect(staged.getAttribute('src')).toBe(expected.url);
+      staged.dispatchEvent(new Event('error'));
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('.stage--staging')).toBeNull();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--stable img')
+        ?.getAttribute('src'),
+    ).toBe(photo.url);
+    expect(reportMediaPreparationFailureMock).toHaveBeenCalledTimes(2);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('cancela la preparación al entrar en reposo e ignora su carga tardía', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const component = fixture.componentInstance as unknown as {
+      navigate(direction: -1 | 1): void;
+      applyReposeState(state: ReposeState): void;
+    };
+    component.navigate(1);
+    fixture.detectChanges();
+    const staleImage = (fixture.nativeElement as HTMLElement).querySelector(
+      '.stage--staging img',
+    ) as HTMLImageElement;
+    component.applyReposeState({
+      ...awakeRepose,
+      active: true,
+      source: 'schedule',
+      enteredAt: '2026-09-15T23:30:00.000Z',
+      updatedAt: '2026-09-15T23:30:00.000Z',
+    });
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).querySelector('.repose-screen')).not.toBeNull();
+    expect((fixture.nativeElement as HTMLElement).querySelector('.stage--staging')).toBeNull();
+
+    Object.defineProperty(staleImage, 'decode', {
+      configurable: true,
+      value: vi.fn(() => Promise.resolve()),
+    });
+    staleImage.dispatchEvent(new Event('load'));
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
     expect((fixture.nativeElement as HTMLElement).querySelector('.stage--incoming')).toBeNull();
+    expect(
+      (fixture.nativeElement as HTMLElement)
+        .querySelector('.stage--stable img')
+        ?.getAttribute('src'),
+    ).toBe(photo.url);
     fixture.destroy();
     vi.useRealTimers();
   });

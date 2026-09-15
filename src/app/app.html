@@ -55,6 +55,7 @@
     <section
       class="stage"
       [class.stage--stable]="slide.phase === 'stable'"
+      [class.stage--staging]="slide.phase === 'staging'"
       [class.stage--outgoing]="slide.phase === 'outgoing'"
       [class.stage--incoming]="slide.phase === 'incoming'"
       [style.--fade-ms]="(crossfade()?.durationMs ?? settings().fadeDurationMs) + 'ms'"
@@ -62,6 +63,7 @@
       @let item = slide.item;
       @if (item.kind === 'photo') {
         <img
+          #photoElement
           class="media media--photo"
           [class.media--cover]="slide.fitMode === 'cover'"
           [class.media--zoomed]="photoIsZoomed(item.id)"
@@ -69,6 +71,8 @@
           [src]="item.url"
           [alt]="item.caption || 'Fotografía de Naiskos'"
           draggable="false"
+          (load)="onPhotoLoaded(photoElement, item.id)"
+          (error)="onPhotoError(item.id)"
         />
       } @else {
         <video
@@ -83,6 +87,7 @@
           preload="auto"
           (loadstart)="onVideoLoadStart(videoElement, item.id)"
           (loadedmetadata)="onVideoLoaded(videoElement, item.id)"
+          (loadeddata)="onStagedVideoReady(videoElement, item.id)"
           (playing)="onVideoPlaying(videoElement, item.id)"
           (pause)="onVideoPause(videoElement, item.id)"
           (timeupdate)="onVideoProgress(videoElement, item.id)"

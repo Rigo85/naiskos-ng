@@ -49,6 +49,12 @@ select {
   opacity: 1;
 }
 
+.stage--staging {
+  z-index: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .stage--outgoing {
   z-index: 2;
   animation: crossfade-out var(--fade-ms, 450ms) ease-in-out both;

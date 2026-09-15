@@ -166,6 +166,17 @@ export interface ViewerPlaybackSnapshot {
   ended: boolean;
   seeking: boolean;
   view: 'viewer' | 'overlay' | 'repose';
+  navigation: ViewerNavigationSnapshot;
+}
+
+export interface ViewerNavigationSnapshot {
+  phase: 'stable' | 'staging' | 'transitioning' | 'degraded';
+  operationId: number | null;
+  candidateMediaId: string | null;
+  candidateMediaSha256: string | null;
+  phaseElapsedMs: number;
+  deadlineMs: number | null;
+  failuresInOperation: number;
 }
 
 export interface ViewerPlaybackEvent extends ViewerPlaybackSnapshot {
@@ -174,4 +185,15 @@ export interface ViewerPlaybackEvent extends ViewerPlaybackSnapshot {
   attempt: number;
   mediaSha256: string | null;
   mediaErrorCode: number | null;
+}
+
+export interface ViewerMediaPreparationFailure {
+  type: 'viewer.media.preparation-failed';
+  mediaId: string;
+  mediaKind: 'photo' | 'video';
+  mediaSha256: string;
+  reason: string;
+  manifestVersion: number | null;
+  operationId: number;
+  elapsedMs: number;
 }

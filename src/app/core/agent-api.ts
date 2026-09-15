@@ -14,6 +14,7 @@ import {
   AgentHealth,
   ViewerPlaybackEvent,
   ViewerPlaybackSnapshot,
+  ViewerMediaPreparationFailure,
   ReposeState,
 } from './models';
 
@@ -136,6 +137,14 @@ export class AgentApi {
 
   reportPlaybackEvent(event: ViewerPlaybackEvent): Observable<{ accepted: boolean }> {
     return this.http.post<{ accepted: boolean }>(`${this.baseUrl}/viewer/playback-events`, event, {
+      headers: { 'X-Naiskos-Request': 'viewer' },
+    });
+  }
+
+  reportMediaPreparationFailure(
+    event: ViewerMediaPreparationFailure,
+  ): Observable<{ accepted: boolean }> {
+    return this.http.post<{ accepted: boolean }>(`${this.baseUrl}/viewer/media-events`, event, {
       headers: { 'X-Naiskos-Request': 'viewer' },
     });
   }

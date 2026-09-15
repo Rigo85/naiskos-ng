@@ -163,11 +163,14 @@ Después abre `http://127.0.0.1:8080/`.
 - `pointer-gestures.ts`: clasificación de tap, swipe y gesto descendente.
 - `photo-zoom.ts`: matemáticas puras del pellizco y desplazamiento acotado.
 - `slideshow-policy.ts`: tiempos y avance de fotografías y videos.
-- `media-readiness.ts`: precarga y disponibilidad antes del crossfade.
+- `navigation-policy.ts`: recorrido finito, manifiesto pendiente y cuarentena por versión del medio.
 - `app.ts`, `app.html` y `app.scss`: estado y presentación del kiosco.
 
-Las pruebas cubren navegación, temporizadores, cambios de manifiesto, video,
-gestos, zoom y acciones administrativas.
+El visor monta el candidato oculto y exige la confirmación del elemento DOM
+real antes del crossfade. Si falla, conserva el último medio confirmado y
+continúa con el siguiente. Las pruebas cubren además cancelaciones, eventos
+tardíos, candidatos corruptos, reposo durante una preparación y deadlines de
+navegación.
 
 ## Contrato con el agente
 
@@ -178,6 +181,7 @@ gestos, zoom y acciones administrativas.
 - actualización o restauración de ajustes;
 - encuadre, rotación y eliminación de medios;
 - salida de Naiskos y apagado del equipo.
+- latidos de reproducción/navegación y fallos genéricos al preparar medios.
 
 Los archivos se cargan desde `/media`. En producción, Angular y estos endpoints
 son servidos por el mismo agente en loopback; no se requiere CORS.

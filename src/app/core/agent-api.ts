@@ -29,6 +29,10 @@ export class AgentApi {
     return this.http.get<FrameManifest>(`${this.baseUrl}/manifest`);
   }
 
+  getRuntimeControl(): Observable<{ quiesceId: string | null }> {
+    return this.http.get<{ quiesceId: string | null }>(`${this.baseUrl}/viewer/runtime`);
+  }
+
   getManifestVersion(): Observable<{ version: number }> {
     return this.http.get<{ version: number }>(`${this.baseUrl}/manifest/version`);
   }

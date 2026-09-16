@@ -194,6 +194,7 @@ const agentApiMock = {
   deleteMediaBatch: deleteMediaBatchMock,
   requestSystemAction: () => of({ accepted: true }),
   getRepose: () => of(servedRepose),
+  getRuntimeControl: () => of<{ quiesceId: string | null }>({ quiesceId: null }),
   setRepose: setReposeMock,
   reportViewerHeartbeat: () => of(undefined),
   reportPlaybackEvent: reportPlaybackEventMock,
@@ -269,6 +270,7 @@ async function finishStagedTransition(
 
 describe('App', () => {
   beforeEach(async () => {
+    vi.restoreAllMocks();
     servedManifest = manifest;
     servedNotifications = [];
     servedRepose = awakeRepose;
@@ -295,6 +297,57 @@ describe('App', () => {
     fixture.detectChanges();
     expect(fixture.componentInstance).toBeTruthy();
     fixture.destroy();
+  });
+
+  it('capitaliza sólo el inicio de la fecha del reposo', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-14T17:00:00.000Z'));
+    servedRepose = { ...awakeRepose, active: true, source: 'schedule' };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    const text = (fixture.nativeElement as HTMLElement).querySelector('.repose-clock__date')?.textContent?.trim();
+    expect(text).toMatch(/^Lunes, 14 de (setiembre|septiembre)$/);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('libera el video para actualizar sin alterar el reposo configurado ni volver a avanzar', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [video, photo] };
+    const runtime = vi.spyOn(agentApiMock, 'getRuntimeControl').mockReturnValue(of({ quiesceId: null }));
+    const released = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined);
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    await makeStagedMediaReady(fixture);
+    const component = fixture.componentInstance as unknown as {
+      viewerPlaybackSnapshot(): { quiescedFor: string|null; uiReady: boolean; mediaId: string|null };
+    };
+    const before = component.viewerPlaybackSnapshot().mediaId;
+    const extraVideo = document.createElement('video');
+    extraVideo.src = '/media/active.mp4';
+    document.body.appendChild(extraVideo);
+    runtime.mockReturnValue(of({ quiesceId: 'nonce-test' }));
+    await vi.advanceTimersByTimeAsync(1000);
+    fixture.detectChanges();
+    expect(extraVideo.hasAttribute('src')).toBe(false);
+    expect(released).toHaveBeenCalled();
+    for (const element of (fixture.nativeElement as HTMLElement).querySelectorAll('video')) {
+      expect(element.hasAttribute('src')).toBe(false);
+      element.dispatchEvent(new Event('pause'));
+      element.dispatchEvent(new Event('ended'));
+    }
+    expect(component.viewerPlaybackSnapshot()).toMatchObject({ quiescedFor: 'nonce-test', uiReady: false });
+    expect(servedRepose.active).toBe(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(component.viewerPlaybackSnapshot().mediaId).toBe(before);
+    extraVideo.remove();
+    fixture.destroy();
+    runtime.mockRestore();
+    vi.useRealTimers();
   });
 
   it('muestra el reloj en reposo, oculta su menú a los 15 segundos y reanuda', async () => {

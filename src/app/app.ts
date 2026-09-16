@@ -1,5 +1,6 @@
 import {
   Component,
+  afterNextRender,
   ElementRef,
   OnDestroy,
   QueryList,
@@ -14,6 +15,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { Subscription, catchError, of, switchMap, timer } from 'rxjs';
 
 import { AgentApi, SystemAction } from './core/agent-api';
+import { VIEWER_BUILD_ID } from './core/build-info';
 import {
   DEFAULT_FRAME_SETTINGS,
   EMPTY_WEATHER,
@@ -249,7 +251,11 @@ export class App implements OnDestroy {
     ...IDENTITY_PHOTO_TRANSFORM,
   });
   protected readonly repose = signal<ReposeState | null>(null);
-  protected readonly reposeActive = computed(() => this.repose()?.active ?? true);
+  private readonly runtimeQuiesced = signal(false);
+  private readonly runtimeRendered = signal(false);
+  private readonly runtimeSessionId = crypto.randomUUID();
+  private quiescedFor: string | null = null;
+  protected readonly reposeActive = computed(() => this.runtimeQuiesced() || (this.repose()?.active ?? true));
   protected readonly reposeMenuVisible = signal(false);
   protected readonly reposeRequestPending = signal(false);
   protected readonly reposeRequestError = signal<string | null>(null);
@@ -366,14 +372,15 @@ export class App implements OnDestroy {
       ...(this.weather().location?.timezone ? { timeZone: this.weather().location!.timezone } : {}),
     }).format(this.now()),
   );
-  protected readonly reposeDate = computed(() =>
-    new Intl.DateTimeFormat('es-PE', {
+  protected readonly reposeDate = computed(() => {
+    const date = new Intl.DateTimeFormat('es-PE', {
       weekday: 'long',
       day: 'numeric',
       month: 'long',
       ...(this.weather().location?.timezone ? { timeZone: this.weather().location!.timezone } : {}),
-    }).format(this.now()),
-  );
+    }).format(this.now());
+    return date.charAt(0).toLocaleUpperCase('es-PE') + date.slice(1);
+  });
   protected readonly reposeTemperature = computed(() => {
     const current = this.weather().current;
     if (!current) return '--°';
@@ -500,6 +507,21 @@ export class App implements OnDestroy {
   private readonly videosPausedInternally = new WeakSet<HTMLVideoElement>();
 
   constructor() {
+    afterNextRender(() => this.runtimeRendered.set(true));
+    this.subscriptions.add(timer(0, 1_000).pipe(
+      switchMap(() => this.agent.getRuntimeControl().pipe(catchError(() => of(null)))),
+    ).subscribe((control) => {
+      if (!control?.quiesceId || this.quiescedFor === control.quiesceId) return;
+      this.runtimeQuiesced.set(true);
+      this.enterRepose();
+      for (const video of document.querySelectorAll('video')) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+      this.quiescedFor = control.quiesceId;
+      this.agent.reportViewerHeartbeat(this.viewerPlaybackSnapshot()).pipe(catchError(() => of(null))).subscribe();
+    }));
     this.subscriptions.add(
       timer(0, 2_000)
         .pipe(
@@ -2691,6 +2713,12 @@ export class App implements OnDestroy {
     const media = this.currentMedia();
     const video = media?.kind === 'video' ? this.currentVideoElement() : null;
     return {
+      buildId: VIEWER_BUILD_ID,
+      sessionId: this.runtimeSessionId,
+      quiescedFor: this.quiescedFor,
+      uiReady: this.runtimeRendered() && this.repose() !== null && !this.runtimeQuiesced() &&
+        (this.reposeActive() || (this.manifest() !== null && !this.loading() &&
+          (document.querySelector('.stage--stable, .stage--incoming') !== null || this.manifest()?.media.length === 0))),
       mediaId: media?.id ?? null,
       mediaKind: media?.kind ?? null,
       state: this.reposeActive()

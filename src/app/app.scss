@@ -44,6 +44,25 @@ select {
   background: transparent;
 }
 
+.scene-cell {
+  position: absolute;
+  overflow: hidden;
+  background: #000;
+}
+
+.collage-menu {
+  position: absolute;
+  z-index: 5;
+  bottom: 20px;
+  left: 20px;
+  min-height: 44px;
+  padding: 8px 18px;
+  border: 1px solid #aaa;
+  border-radius: 12px;
+  color: #fff;
+  background: #181818dd;
+}
+
 .stage--stable {
   z-index: 1;
   opacity: 1;

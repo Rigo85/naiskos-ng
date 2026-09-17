@@ -186,7 +186,7 @@ const agentApiMock = {
       pairingCode: 'WXYZ-6789-ABCD',
       pairingDeepLink: 'https://t.me/naiskosbot?start=frame_WXYZ6789ABCD',
     }),
-  updateSettings: () => of(DEFAULT_FRAME_SETTINGS),
+  updateSettings: (patch: Partial<typeof DEFAULT_FRAME_SETTINGS>) => of({ ...servedManifest.settings, ...patch }),
   resetSettings: () => of(DEFAULT_FRAME_SETTINGS),
   updateMedia: updateMediaMock,
   rotateMedia: rotateMediaMock,
@@ -259,6 +259,21 @@ async function makeStagedMediaReady(
   }
 }
 
+async function makeStagedSceneReady(fixture: ReturnType<typeof TestBed.createComponent<App>>): Promise<void> {
+  fixture.detectChanges();
+  const compiled = fixture.nativeElement as HTMLElement;
+  for (const image of compiled.querySelectorAll<HTMLImageElement>('.stage--staging img')) {
+    Object.defineProperty(image, 'decode', { configurable: true, value: () => Promise.resolve() });
+    image.dispatchEvent(new Event('load'));
+  }
+  for (const video of compiled.querySelectorAll<HTMLVideoElement>('.stage--staging video')) {
+    Object.defineProperty(video, 'readyState', { configurable: true, value: 2 });
+    video.dispatchEvent(new Event('loadeddata'));
+  }
+  await vi.advanceTimersByTimeAsync(0);
+  fixture.detectChanges();
+}
+
 async function finishStagedTransition(
   fixture: ReturnType<typeof TestBed.createComponent<App>>,
   durationMs = 450,
@@ -297,6 +312,222 @@ describe('App', () => {
     fixture.detectChanges();
     expect(fixture.componentInstance).toBeTruthy();
     fixture.destroy();
+  });
+
+  it('prepara todas las fotos del collage antes de mostrarlo y cuenta una sola duración', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
+      media: [photo, secondPhoto, thirdPhoto, { ...photo, id: 'fourth', url: '/fourth' }]
+        .map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelectorAll('.stage--staging img')).toHaveLength(2);
+    await makeStagedMediaReady(fixture);
+    expect(compiled.querySelector('.stage--stable')).toBeNull();
+    await makeStagedSceneReady(fixture);
+    expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(2);
+    expect(compiled.querySelector('.metadata')).toBeNull();
+    expect(compiled.querySelector('.collage-menu')).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(30_000);
+    fixture.detectChanges();
+    expect(compiled.querySelectorAll('.stage--staging img')).toHaveLength(2);
+    await makeStagedSceneReady(fixture);
+    await vi.advanceTimersByTimeAsync(450);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.stage--stable img')?.getAttribute('src')).toBe(thirdPhoto.url);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('identifica y omite sólo el acompañante fallido de un collage', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
+      media: [photo, secondPhoto].map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    compiled.querySelectorAll('.stage--staging img')[1].dispatchEvent(new Event('error'));
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    expect(reportMediaPreparationFailureMock).toHaveBeenCalledWith(expect.objectContaining({ mediaId: secondPhoto.id }));
+    expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(1);
+    expect(compiled.querySelector('.stage--stable img')?.getAttribute('src')).toBe(photo.url);
+    expect((compiled.querySelector('.scene-cell') as HTMLElement).style.width).toBe('100%');
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('reutiliza el video como reloj del collage, respeta pausa y reposo', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns', photoDurationSeconds: 3 },
+      media: [photo, video, secondPhoto, thirdPhoto].map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const compiled = fixture.nativeElement as HTMLElement;
+    const component = fixture.componentInstance as any;
+    expect(component.currentMedia().id).toBe(video.id);
+    const element = compiled.querySelector('video') as HTMLVideoElement;
+    Object.defineProperties(element, { paused: { configurable: true, value: false }, duration: { configurable: true, value: 10 } });
+    element.dispatchEvent(new Event('playing'));
+    await vi.advanceTimersByTimeAsync(3100);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.stage--staging')).toBeNull();
+    const key = component.currentScene().key;
+    component.applyReposeState({ ...awakeRepose, active: true, updatedAt: '2026-09-17T12:00:00Z' });
+    element.dispatchEvent(new Event('pause'));
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(component.currentScene().key).toBe(key);
+    component.applyReposeState({ ...awakeRepose, active: false, updatedAt: '2026-09-17T12:01:00Z' });
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    expect(component.currentScene().key).toBe(key);
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+    Object.defineProperty(element, 'paused', { configurable: true, value: true });
+    element.dispatchEvent(new Event('pause'));
+    await vi.advanceTimersByTimeAsync(3000);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.stage--staging')).not.toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('avanza la escena completa al finalizar su video, sin tiempo adicional', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
+      media: [photo, video, secondPhoto, thirdPhoto].map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const compiled = fixture.nativeElement as HTMLElement;
+    compiled.querySelector('video')!.dispatchEvent(new Event('ended'));
+    fixture.detectChanges();
+    expect(compiled.querySelectorAll('.stage--staging img')).toHaveLength(2);
+    await makeStagedSceneReady(fixture);
+    await vi.advanceTimersByTimeAsync(450);
+    fixture.detectChanges();
+    expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(2);
+    expect(compiled.querySelector('video')).toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('prepara el nuevo modo al guardar, conserva preferencias y permite salir desde el menú', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [photo, secondPhoto].map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    const component = fixture.componentInstance as any;
+    component.openSettings();
+    component.settingsDraft = { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' };
+    component.saveSettings();
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(1);
+    expect(compiled.querySelectorAll('.stage--staging img')).toHaveLength(2);
+    await makeStagedSceneReady(fixture);
+    await vi.advanceTimersByTimeAsync(450);
+    fixture.detectChanges();
+    expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(2);
+    expect(component.settings().showCaption).toBe(true);
+    expect(compiled.querySelector('.metadata')).toBeNull();
+    compiled.querySelector<HTMLButtonElement>('.collage-menu')!.click();
+    fixture.detectChanges();
+    expect(component.activeView()).toBe('menu');
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('cancela una escena incompleta al entrar en reposo e ignora las cargas tardías', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
+      media: [photo, secondPhoto, thirdPhoto, { ...photo, id: 'fourth', url: '/fourth' }]
+        .map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const component = fixture.componentInstance as any;
+    const key = component.currentScene().key;
+    component.navigate(1);
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    const delayed = [...compiled.querySelectorAll<HTMLImageElement>('.stage--staging img')];
+    component.applyReposeState({ ...awakeRepose, active: true, updatedAt: '2026-09-17T12:00:00Z' });
+    fixture.detectChanges();
+    for (const image of delayed) image.dispatchEvent(new Event('load'));
+    await vi.advanceTimersByTimeAsync(30_000);
+    fixture.detectChanges();
+    expect(component.currentScene().key).toBe(key);
+    expect(compiled.querySelector('.stage--staging')).toBeNull();
+    expect(compiled.querySelector('.stage--incoming')).toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('en collage ignora arrastre y pellizco pero mantiene el toque para avanzar', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
+      media: [photo, secondPhoto, thirdPhoto, { ...photo, id: 'fourth', url: '/fourth' }]
+        .map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const compiled = fixture.nativeElement as HTMLElement;
+    const frame = compiled.querySelector('main') as HTMLElement;
+    setViewerBounds(frame);
+    const component = fixture.componentInstance as any;
+    const key = component.currentScene().key;
+    dispatchPointer(frame, 'pointerdown', 1000, 400);
+    dispatchPointer(frame, 'pointerup', 500, 400);
+    dispatchPointer(frame, 'pointerdown', 500, 400, 1, 'touch');
+    dispatchPointer(frame, 'pointerdown', 700, 400, 2, 'touch');
+    dispatchPointer(frame, 'pointermove', 900, 400, 2, 'touch');
+    dispatchPointer(frame, 'pointerup', 900, 400, 2, 'touch');
+    dispatchPointer(frame, 'pointerup', 500, 400, 1, 'touch');
+    fixture.detectChanges();
+    expect(component.currentScene().key).toBe(key);
+    expect(component.photoTransform().scale).toBe(1);
+    expect(compiled.querySelector('.stage--staging')).toBeNull();
+    dispatchPointer(frame, 'pointerdown', 1000, 400);
+    dispatchPointer(frame, 'pointerup', 1000, 400);
+    fixture.detectChanges();
+    expect(compiled.querySelector('.stage--staging')).not.toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('actualiza acompañantes del manifiesto aunque conserve el mismo medio principal', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns', showCaption: false },
+      media: [photo, secondPhoto].map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const component = fixture.componentInstance as any;
+    component.receiveManifest({ ...servedManifest, version: 2,
+      media: [servedManifest.media[0], { ...thirdPhoto, width: 670, height: 1000 }] });
+    component.navigate(1);
+    await makeStagedSceneReady(fixture);
+    await vi.advanceTimersByTimeAsync(450);
+    fixture.detectChanges();
+    expect(component.currentScene().cells.map((cell: any) => cell.item.id)).toEqual([photo.id, thirdPhoto.id]);
+    expect(component.settings().collageMode).toBe('columns');
+    expect(component.settings().showCaption).toBe(false);
+    fixture.destroy();
+    vi.useRealTimers();
   });
 
   it('capitaliza sólo el inicio de la fecha del reposo', async () => {

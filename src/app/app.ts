@@ -49,9 +49,10 @@ import {
 import { adjacentIndex, orderManifestMedia } from './core/slideshow-policy';
 import {
   MediaFailureRegistry,
-  NavigationCandidate,
-  navigationPlan,
 } from './core/navigation-policy';
+import {
+  buildScenes, MediaScene, omitSceneItems, SceneCandidate, sceneNavigationPlan,
+} from './core/collage-policy';
 
 type SlidePhase = 'stable' | 'staging' | 'outgoing' | 'incoming';
 type AppView = 'viewer' | 'menu' | 'gallery' | 'settings' | 'notifications';
@@ -60,32 +61,35 @@ type GalleryOrder = 'newest' | 'oldest';
 type SettingsSection = 'presentation' | 'widgets' | 'playback' | 'storage' | 'device';
 
 interface RenderedSlide {
+  scene: MediaScene;
   item: MediaItem;
   phase: SlidePhase;
   fitMode: FitMode;
 }
 
 interface CrossfadeState {
+  outgoingScene: MediaScene;
   outgoing: MediaItem;
   outgoingFitMode: FitMode;
   incoming: MediaItem;
   incomingFitMode: FitMode;
   durationMs: number;
-  target: NavigationCandidate;
+  target: SceneCandidate;
   startedAt: number;
 }
 
 interface StagingState {
+  outgoingScene: MediaScene | null;
   operationId: number;
   outgoing: MediaItem | null;
   outgoingFitMode: FitMode | null;
-  target: NavigationCandidate;
+  target: SceneCandidate;
   incomingFitMode: FitMode;
   startedAt: number;
 }
 
 interface StagingAttempt {
-  mediaKey: string;
+  pendingKeys: Set<string>;
   resolve: () => void;
   reject: (error: Error) => void;
   cleanup: () => void;
@@ -102,6 +106,9 @@ interface PlaybackCheckpoint {
 }
 
 class NavigationCancelledError extends Error {}
+class ScenePreparationError extends Error {
+  constructor(readonly item: MediaItem, message: string) { super(message); }
+}
 
 interface GalleryDragState {
   pointerId: number;
@@ -267,7 +274,14 @@ export class App implements OnDestroy {
     () => this.notifications().filter((item) => !item.readAt).length,
   );
   protected readonly media = computed(() => this.manifest()?.media ?? []);
-  protected readonly currentMedia = computed(() => this.media()[this.currentIndex()] ?? null);
+  private readonly sceneCache = new WeakMap<FrameManifest, MediaScene[]>();
+  private readonly committedScene = signal<MediaScene | null>(null);
+  protected readonly collageEnabled = computed(() => (this.settings().collageMode ?? 'off') !== 'off');
+  protected readonly currentScene = computed(() => {
+    const manifest = this.manifest();
+    return this.committedScene() ?? (manifest ? this.scenesFor(manifest)[this.currentIndex()] : null) ?? null;
+  });
+  protected readonly currentMedia = computed(() => this.currentScene()?.driver ?? null);
   protected readonly galleryItems = computed(() => {
     const filter = this.galleryFilter();
     const direction = this.galleryOrder() === 'newest' ? -1 : 1;
@@ -407,11 +421,13 @@ export class App implements OnDestroy {
       return [
         {
           item: crossfade.outgoing,
+          scene: crossfade.outgoingScene,
           phase: 'outgoing',
           fitMode: crossfade.outgoingFitMode,
         },
         {
           item: crossfade.incoming,
+          scene: crossfade.target.scene,
           phase: 'incoming',
           fitMode: crossfade.incomingFitMode,
         },
@@ -424,6 +440,7 @@ export class App implements OnDestroy {
           ? [
               {
                 item: staging.outgoing,
+                scene: staging.outgoingScene!,
                 phase: 'stable' as const,
                 fitMode: staging.outgoingFitMode,
               },
@@ -431,6 +448,7 @@ export class App implements OnDestroy {
           : []),
         {
           item: staging.target.item,
+          scene: staging.target.scene,
           phase: 'staging',
           fitMode: staging.incomingFitMode,
         },
@@ -438,10 +456,11 @@ export class App implements OnDestroy {
     }
     const current = this.currentMedia();
     return current
-      ? [{ item: current, phase: 'stable', fitMode: this.fitModeFor(current, this.settings()) }]
+      ? [{ item: current, scene: this.currentScene()!, phase: 'stable', fitMode: this.fitModeFor(current, this.settings()) }]
       : [];
   });
   protected readonly preloadUrls = computed(() => {
+    if (this.collageEnabled()) return [];
     const media = this.media();
     if (media.length < 2) return [];
     const index = this.currentIndex();
@@ -490,6 +509,7 @@ export class App implements OnDestroy {
   private readonly unavailableMedia = new MediaFailureRegistry(MEDIA_QUARANTINE_MS);
   private navigationGeneration = 0;
   private stagingAttempt: StagingAttempt | null = null;
+  private sceneRefreshId: string | undefined;
   private navigationFailures = 0;
   private readonly playbackCheckpoint = this.readPlaybackCheckpoint();
   private lastPlaybackCheckpointSignature: string | null = null;
@@ -669,6 +689,7 @@ export class App implements OnDestroy {
     const current = this.currentMedia();
     const transform = this.photoTransform();
     if (
+      !this.collageEnabled() &&
       current?.kind === 'photo' &&
       transform.mediaId === current.id &&
       transform.scale > PHOTO_ZOOM_ACTIVE_THRESHOLD
@@ -797,6 +818,11 @@ export class App implements OnDestroy {
       at: event.timeStamp,
     };
     const action = classifyGesture(start, end, bounds.width);
+
+    if (this.collageEnabled() && action !== 'tap-left' && action !== 'tap-right') {
+      this.finishPhotoTimerInteraction();
+      return;
+    }
 
     if (action === 'open-settings') {
       this.abandonPhotoTimerInteraction();
@@ -1505,10 +1531,8 @@ export class App implements OnDestroy {
   }
 
   protected onVideoError(video: HTMLVideoElement, mediaId: string, mediaSha256: string): void {
-    if (this.stagingAttempt?.mediaKey === `${mediaId}:${mediaSha256}`) {
-      this.settleStagingAttempt(
-        new Error(`El video no se pudo preparar (código ${video.error?.code ?? 0}).`),
-      );
+    if (this.stagingAttempt && this.staging()?.target.scene.cells.some((cell) => this.mediaIdentity(cell.item) === `${mediaId}:${mediaSha256}`)) {
+      this.failStagedCell(`${mediaId}:${mediaSha256}`, `El video no se pudo preparar (código ${video.error?.code ?? 0}).`);
       return;
     }
     const failedKey = `${mediaId}:${mediaSha256}`;
@@ -1686,6 +1710,7 @@ export class App implements OnDestroy {
 
   private canManipulateCurrentPhoto(): boolean {
     return (
+      !this.collageEnabled() &&
       this.currentMedia()?.kind === 'photo' &&
       !this.preparingTransition() &&
       this.crossfade() === null
@@ -2003,21 +2028,26 @@ export class App implements OnDestroy {
     const generation = ++this.navigationGeneration;
     const outgoingFitMode = outgoing ? this.fitModeFor(outgoing, active.settings) : null;
     this.preparingTransition.set(true);
-    const candidates = navigationPlan({
+    const candidates = sceneNavigationPlan({
       active,
       pending: this.pendingManifest(),
       currentIndex: this.currentIndex(),
       currentMediaId: outgoing?.id ?? null,
       direction,
       ...(preferredMediaId ? { preferredMediaId } : {}),
-    });
+    }, (manifest) => this.scenesFor(manifest));
     const searchStartedAt = performance.now();
     this.navigationFailures = 0;
     let attempted = 0;
     let exhausted = true;
 
-    for (const candidate of candidates) {
-      if (outgoing && this.mediaIdentity(candidate.item) === this.mediaIdentity(outgoing)) {
+    for (let position = 0; position < candidates.length; position += 1) {
+      let candidate = candidates[position];
+      const available = omitSceneItems(candidate.scene, (item) =>
+        this.unavailableMedia.contains(item) || (item.kind === 'video' && this.isVideoQuarantined(item)));
+      if (!available) continue;
+      candidate = { ...candidate, scene: available, item: available.driver };
+      if (outgoing && candidate.scene.key === this.currentScene()?.key) {
         if (candidates.length === 1) {
           if (candidate.manifest.version !== active.version) {
             this.commitPreparedCandidate(generation, candidate, false);
@@ -2051,9 +2081,14 @@ export class App implements OnDestroy {
         if (error instanceof NavigationCancelledError || generation !== this.navigationGeneration) {
           return;
         }
-        this.unavailableMedia.quarantine(candidate.item);
+        const failedItem = error instanceof ScenePreparationError ? error.item : candidate.item;
+        this.unavailableMedia.quarantine(failedItem);
         this.navigationFailures += 1;
-        this.reportPreparationFailure(candidate.item, error);
+        this.reportPreparationFailure(failedItem, error);
+        // Retry the healthy remainder within the same bounded operation.
+        const remainder = omitSceneItems(candidate.scene, (item) => item.id === failedItem.id);
+        if (remainder) candidates.splice(position + 1, 0,
+          { ...candidate, scene: remainder, item: remainder.driver });
         continue;
       }
       if (generation !== this.navigationGeneration) return;
@@ -2079,19 +2114,22 @@ export class App implements OnDestroy {
     operationId: number,
     outgoing: MediaItem | null,
     outgoingFitMode: FitMode | null,
-    target: NavigationCandidate,
+    target: SceneCandidate,
   ): Promise<void> {
     this.discardStagingAttempt(new NavigationCancelledError('Preparación sustituida.'));
     return new Promise<void>((resolve, reject) => {
       const timeout = window.setTimeout(
-        () => this.settleStagingAttempt(new Error('Tiempo de preparación agotado.')),
+        () => {
+          const item = target.scene.cells.find((cell) => this.stagingAttempt?.pendingKeys.has(this.mediaIdentity(cell.item)))?.item ?? target.item;
+          this.settleStagingAttempt(new ScenePreparationError(item, 'Tiempo de preparación agotado.'));
+        },
         MEDIA_PREPARATION_TIMEOUT_MS,
       );
       const cleanup = () => {
         window.clearTimeout(timeout);
       };
       this.stagingAttempt = {
-        mediaKey: this.mediaIdentity(target.item),
+        pendingKeys: new Set(target.scene.cells.map((cell) => this.mediaIdentity(cell.item))),
         resolve,
         reject,
         cleanup,
@@ -2099,6 +2137,7 @@ export class App implements OnDestroy {
       this.staging.set({
         operationId,
         outgoing,
+        outgoingScene: this.currentScene(),
         outgoingFitMode,
         target,
         incomingFitMode: this.fitModeFor(target.item, target.manifest.settings),
@@ -2109,7 +2148,7 @@ export class App implements OnDestroy {
 
   private commitPreparedCandidate(
     generation: number,
-    target: NavigationCandidate,
+    target: SceneCandidate,
     resetTransform = true,
   ): void {
     if (generation !== this.navigationGeneration) return;
@@ -2119,6 +2158,7 @@ export class App implements OnDestroy {
       this.pendingManifest.set(null);
     }
     this.currentIndex.set(target.index);
+    this.committedScene.set(target.scene);
     this.staging.set(null);
     this.preparingTransition.set(false);
     this.connectionWarning.set(null);
@@ -2138,6 +2178,7 @@ export class App implements OnDestroy {
       this.pendingManifest.set(null);
     }
     this.currentIndex.set(0);
+    this.committedScene.set(null);
     this.videoPaused.set(false);
     this.videoPlaybackState.set('empty');
   }
@@ -2152,7 +2193,9 @@ export class App implements OnDestroy {
       this.commitEmptyManifest(pending);
       return;
     }
-    this.navigate(1, undefined, true);
+    const preferred = this.sceneRefreshId;
+    this.sceneRefreshId = undefined;
+    this.navigate(1, preferred, true);
   }
 
   private settleStagingAttempt(error?: Error): void {
@@ -2164,6 +2207,18 @@ export class App implements OnDestroy {
     else attempt.resolve();
   }
 
+  private markStagedCellReady(mediaKey: string): void {
+    const attempt = this.stagingAttempt;
+    if (!attempt) return;
+    attempt.pendingKeys.delete(mediaKey);
+    if (attempt.pendingKeys.size === 0) this.settleStagingAttempt();
+  }
+
+  private failStagedCell(mediaKey: string, message: string): void {
+    const item = this.staging()?.target.scene.cells.find((cell) => this.mediaIdentity(cell.item) === mediaKey)?.item;
+    if (item) this.settleStagingAttempt(new ScenePreparationError(item, message));
+  }
+
   private discardStagingAttempt(error: Error): void {
     this.settleStagingAttempt(error);
     this.staging.set(null);
@@ -2173,7 +2228,7 @@ export class App implements OnDestroy {
     generation: number,
     outgoing: MediaItem,
     outgoingFitMode: FitMode,
-    target: NavigationCandidate,
+    target: SceneCandidate,
   ): void {
     if (generation !== this.navigationGeneration) return;
     const outgoingVideo = this.currentVideoElement();
@@ -2181,6 +2236,7 @@ export class App implements OnDestroy {
     const durationMs = target.manifest.settings.fadeDurationMs;
     this.crossfade.set({
       outgoing,
+      outgoingScene: this.currentScene()!,
       outgoingFitMode,
       incoming: target.item,
       incomingFitMode: this.fitModeFor(target.item, target.manifest.settings),
@@ -2250,16 +2306,14 @@ export class App implements OnDestroy {
 
   protected onPhotoLoaded(image: HTMLImageElement, mediaKey: string): void {
     const attempt = this.stagingAttempt;
-    if (!attempt || attempt.mediaKey !== mediaKey) return;
+    if (!attempt || !attempt.pendingKeys.has(mediaKey) || !image.closest('.stage--staging')) return;
     void (typeof image.decode === 'function' ? image.decode() : Promise.resolve()).then(
       () => {
-        if (this.stagingAttempt === attempt) this.settleStagingAttempt();
+        if (this.stagingAttempt === attempt) this.markStagedCellReady(mediaKey);
       },
       (error: unknown) => {
         if (this.stagingAttempt === attempt) {
-          this.settleStagingAttempt(
-            error instanceof Error ? error : new Error('La fotografía no se pudo decodificar.'),
-          );
+          this.failStagedCell(mediaKey, error instanceof Error ? error.message : 'La fotografía no se pudo decodificar.');
         }
       },
     );
@@ -2268,22 +2322,23 @@ export class App implements OnDestroy {
   protected onPhotoError(mediaId: string, mediaSha256: string): void {
     const failedKey = `${mediaId}:${mediaSha256}`;
     const attempt = this.stagingAttempt;
-    if (attempt?.mediaKey === failedKey) {
-      this.settleStagingAttempt(new Error('La fotografía no se pudo cargar.'));
+    if (attempt && this.staging()?.target.scene.cells.some((cell) => this.mediaIdentity(cell.item) === failedKey)) {
+      this.failStagedCell(failedKey, 'La fotografía no se pudo cargar.');
       return;
     }
     const transition = this.crossfade();
-    if (transition && this.mediaIdentity(transition.incoming) === failedKey) {
+    const incomingItem = transition?.target.scene.cells.find((cell) => this.mediaIdentity(cell.item) === failedKey)?.item;
+    if (transition && incomingItem) {
       this.cancelCrossfade();
-      this.unavailableMedia.quarantine(transition.incoming);
+      this.unavailableMedia.quarantine(incomingItem);
       this.reportPreparationFailure(
-        transition.incoming,
+        incomingItem,
         new Error('Falló la fotografía entrante.'),
       );
       this.navigate(1, undefined, true);
       return;
     }
-    const current = this.currentMedia();
+    const current = this.currentScene()?.cells.find((cell) => this.mediaIdentity(cell.item) === failedKey)?.item;
     if (
       !current ||
       this.mediaIdentity(current) !== failedKey ||
@@ -2298,10 +2353,10 @@ export class App implements OnDestroy {
 
   protected onStagedVideoReady(video: HTMLVideoElement, mediaKey: string): void {
     const attempt = this.stagingAttempt;
-    if (!attempt || attempt.mediaKey !== mediaKey || video.readyState < 2) {
+    if (!attempt || !attempt.pendingKeys.has(mediaKey) || video.readyState < 2 || !video.closest('.stage--staging')) {
       return;
     }
-    this.settleStagingAttempt();
+    this.markStagedCellReady(mediaKey);
   }
 
   private finishCrossfade(): void {
@@ -2314,6 +2369,7 @@ export class App implements OnDestroy {
       this.pendingManifest.set(null);
     }
     this.currentIndex.set(transition.target.index);
+    this.committedScene.set(transition.target.scene);
     this.crossfade.set(null);
     this.videoPaused.set(false);
     this.persistPlaybackCheckpoint(true);
@@ -2570,6 +2626,12 @@ export class App implements OnDestroy {
 
   private resumeCurrentCycle(): void {
     if (this.reposeActive()) return;
+    if (this.sceneRefreshId && !this.overlayOpen()) {
+      const preferred = this.sceneRefreshId;
+      this.sceneRefreshId = undefined;
+      this.navigate(1, preferred, true);
+      return;
+    }
     const video = this.currentVideoElement();
     if (video && this.currentMedia()?.kind === 'video') {
       if (this.videoPaused()) {
@@ -2605,12 +2667,35 @@ export class App implements OnDestroy {
     if (manifest) {
       const currentId = this.currentMedia()?.id;
       const next = this.orderManifest({ ...manifest, settings });
+      const regroup = manifest.settings.order !== settings.order ||
+        (manifest.settings.collageMode ?? 'off') !== (settings.collageMode ?? 'off');
+      if (regroup) {
+        const currentScene = this.currentScene();
+        this.cancelNavigation();
+        this.cancelCrossfade();
+        this.clearVideoMonitoring();
+        this.clearPausedVideoAdvance();
+        this.resetPhotoTransform();
+        this.committedScene.set(currentScene);
+        this.sceneRefreshId = currentId;
+      }
       this.manifest.set(next);
       if (currentId) {
-        const index = next.media.findIndex((item) => item.id === currentId);
+        const index = this.scenesFor(next).findIndex((scene) => scene.cells.some((cell) => cell.item.id === currentId));
         if (index >= 0) this.currentIndex.set(index);
       }
     }
+    const pending = this.pendingManifest();
+    if (pending) this.pendingManifest.set(this.orderManifest({ ...pending, settings }));
+  }
+
+  private scenesFor(manifest: FrameManifest): MediaScene[] {
+    let scenes = this.sceneCache.get(manifest);
+    if (!scenes) {
+      scenes = buildScenes(manifest.media, manifest.settings.collageMode ?? 'off', window.innerWidth / window.innerHeight);
+      this.sceneCache.set(manifest, scenes);
+    }
+    return scenes;
   }
 
   private orderManifest(manifest: FrameManifest): FrameManifest {
@@ -2628,6 +2713,12 @@ export class App implements OnDestroy {
     this.manifest.set({
       ...manifest,
       media: manifest.media.map((item) => (item.id === updated.id ? updated : item)),
+    });
+    const scene = this.committedScene();
+    if (scene) this.committedScene.set({
+      ...scene,
+      driver: scene.driver.id === updated.id ? updated : scene.driver,
+      cells: scene.cells.map((cell) => cell.item.id === updated.id ? { ...cell, item: updated } : cell),
     });
   }
 
@@ -2974,7 +3065,7 @@ export class App implements OnDestroy {
     return `${item.id}:${item.sha256}`;
   }
 
-  private fitModeFor(item: MediaItem, settings: FrameSettings): FitMode {
+  protected fitModeFor(item: MediaItem, settings: FrameSettings): FitMode {
     return item.fitMode === 'inherit' ? settings.defaultFitMode : item.fitMode;
   }
 }

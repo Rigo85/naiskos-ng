@@ -1,8 +1,10 @@
 export type FitMode = 'contain' | 'cover';
 export type MediaFitMode = FitMode | 'inherit';
 export type DisplayOrder = 'newest' | 'oldest' | 'shuffle';
+export type CollageMode = 'off' | 'columns' | 'adaptive';
 
 export interface FrameSettings {
+  collageMode: CollageMode;
   photoDurationSeconds: number;
   order: DisplayOrder;
   defaultFitMode: FitMode;
@@ -19,6 +21,7 @@ export interface FrameSettings {
 }
 
 export const DEFAULT_FRAME_SETTINGS: FrameSettings = {
+  collageMode: 'off',
   photoDurationSeconds: 30,
   order: 'newest',
   defaultFitMode: 'contain',
@@ -64,6 +67,8 @@ export const EMPTY_WEATHER: WeatherSnapshot = {
 };
 
 export interface MediaItem {
+  width?: number | null;
+  height?: number | null;
   id: string;
   kind: 'photo' | 'video';
   url: string;

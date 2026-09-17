@@ -157,6 +157,10 @@ Después abre `http://127.0.0.1:8080/`.
 
 ## Arquitectura de la interfaz
 
+El [collage básico](docs/collage.md) añade columnas verticales y mosaico adaptable
+como opciones de presentación. Incluye sus reglas, contrato de dimensiones y
+alcance de las pruebas; la aceptación sobre el dispositivo está pendiente.
+
 - `src/app/core/models.ts`: contrato de manifiesto, ajustes, medios, clima y
   aprovisionamiento.
 - `src/app/core/agent-api.ts`: único acceso HTTP; todas las rutas son relativas.

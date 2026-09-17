@@ -51,7 +51,7 @@
     </section>
   }
 
-  @for (slide of renderedSlides(); track mediaIdentity(slide.item)) {
+  @for (slide of renderedSlides(); track slide.scene.key) {
     <section
       class="stage"
       [class.stage--stable]="slide.phase === 'stable'"
@@ -60,12 +60,16 @@
       [class.stage--incoming]="slide.phase === 'incoming'"
       [style.--fade-ms]="(crossfade()?.durationMs ?? settings().fadeDurationMs) + 'ms'"
     >
-      @let item = slide.item;
+      @for (cell of slide.scene.cells; track mediaIdentity(cell.item)) {
+      @let item = cell.item;
+      <div class="scene-cell"
+        [style.left.%]="cell.left * 100" [style.top.%]="cell.top * 100"
+        [style.width.%]="cell.width * 100" [style.height.%]="cell.height * 100">
       @if (item.kind === 'photo') {
         <img
           #photoElement
           class="media media--photo"
-          [class.media--cover]="slide.fitMode === 'cover'"
+          [class.media--cover]="fitModeFor(item, settings()) === 'cover'"
           [class.media--zoomed]="photoIsZoomed(item.id)"
           [style.transform]="photoTransformStyle(item.id)"
           [src]="item.url"
@@ -78,12 +82,12 @@
         <video
           #videoElement
           class="media media--video"
-          [class.media--cover]="slide.fitMode === 'cover'"
+          [class.media--cover]="fitModeFor(item, settings()) === 'cover'"
           [attr.data-media-id]="item.id"
           [attr.data-media-key]="mediaIdentity(item)"
           [src]="item.url"
           [poster]="item.posterUrl || ''"
-          autoplay
+          [autoplay]="slide.phase === 'stable'"
           playsinline
           preload="auto"
           (loadstart)="onVideoLoadStart(videoElement, item.id)"
@@ -100,7 +104,10 @@
           (ended)="onVideoEnded(item.id)"
         ></video>
 
-        @if (slide.phase === 'stable') {
+      }
+      </div>
+      }
+      @if (slide.item.kind === 'video' && slide.phase === 'stable') {
           <div class="video-controls" (pointerdown)="$event.stopPropagation()">
             <label class="video-seek">
               <output>{{ formatVideoTime(videoCurrentTime()) }}</output>
@@ -135,10 +142,10 @@
               </label>
             </div>
           </div>
-        }
       }
 
-      @if ((settings().showCaption && item.caption) || (settings().showSender && item.senderName)) {
+      @let item = slide.item;
+      @if (!collageEnabled() && ((settings().showCaption && item.caption) || (settings().showSender && item.senderName))) {
         <aside class="metadata">
           @if (settings().showCaption && item.caption) {
             <p class="metadata__caption">{{ item.caption }}</p>
@@ -210,6 +217,10 @@
   @if (currentMedia()) {
     <span class="navigation-hint navigation-hint--left" aria-hidden="true">‹</span>
     <span class="navigation-hint navigation-hint--right" aria-hidden="true">›</span>
+  }
+  @if (collageEnabled() && !overlayOpen() && !reposeActive()) {
+    <button class="collage-menu" type="button" (pointerdown)="$event.stopPropagation()"
+      (click)="openMainMenu()" aria-label="Abrir menú">Menú</button>
   }
 
   <div class="preload" aria-hidden="true">
@@ -731,6 +742,16 @@
                 <p>Comportamiento global de fotografías y videos.</p>
               </div>
               <div class="settings-grid">
+                <label class="field">
+                  <span>Presentación</span>
+                  <select [value]="settingsDraft.collageMode || 'off'"
+                    (change)="settingsDraft.collageMode = $any($event.target).value">
+                    <option value="off">Individual</option>
+                    <option value="columns">Collage: columnas verticales</option>
+                    <option value="adaptive">Collage: mosaico adaptable</option>
+                  </select>
+                  <small>Collage sin leyendas ni zoom. Conserva el encuadre de cada material.</small>
+                </label>
                 <label class="field">
                   <span>Duración de fotografías y pausa de video</span>
                   <div class="range-row">

@@ -819,14 +819,13 @@ export class App implements OnDestroy {
     };
     const action = classifyGesture(start, end, bounds.width);
 
-    if (this.collageEnabled() && action !== 'tap-left' && action !== 'tap-right') {
-      this.finishPhotoTimerInteraction();
-      return;
-    }
-
     if (action === 'open-settings') {
       this.abandonPhotoTimerInteraction();
       this.openMainMenu();
+      return;
+    }
+    if (this.collageEnabled() && action !== 'tap-left' && action !== 'tap-right') {
+      this.finishPhotoTimerInteraction();
       return;
     }
     if (action === 'next') {

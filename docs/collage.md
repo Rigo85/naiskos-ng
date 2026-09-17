@@ -19,9 +19,10 @@ Cada celda respeta `contain`/`cover` y `inherit`. No hay reconocimiento de sujet
 Mientras se selecciona un modo collage se ocultan leyendas y remitentes, sin
 modificar sus preferencias globales. Reloj y clima siguen en su lugar.
 
-Los toques izquierda/derecha cambian la escena completa. El botón **Menú**
-permite acceder a opciones; no hay navegación por arrastre ni zoom. La galería
-mantiene sus controles y gestos habituales.
+Los toques izquierda/derecha cambian la escena completa. El deslizamiento de
+arriba hacia abajo abre el menú, igual que en modo individual; no hay un botón
+adicional. No hay navegación por arrastre horizontal ni zoom en collage. La
+galería mantiene sus controles y gestos habituales.
 
 ## Reproducción y preparación
 

@@ -330,7 +330,7 @@ describe('App', () => {
     await makeStagedSceneReady(fixture);
     expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(2);
     expect(compiled.querySelector('.metadata')).toBeNull();
-    expect(compiled.querySelector('.collage-menu')).not.toBeNull();
+    expect(compiled.querySelector('.collage-menu')).toBeNull();
     await vi.advanceTimersByTimeAsync(30_000);
     fixture.detectChanges();
     expect(compiled.querySelectorAll('.stage--staging img')).toHaveLength(2);
@@ -441,12 +441,49 @@ describe('App', () => {
     expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(2);
     expect(component.settings().showCaption).toBe(true);
     expect(compiled.querySelector('.metadata')).toBeNull();
-    compiled.querySelector<HTMLButtonElement>('.collage-menu')!.click();
+    const frame = compiled.querySelector('main') as HTMLElement;
+    dispatchPointer(frame, 'pointerdown', 640, 20, 1, 'touch');
+    dispatchPointer(frame, 'pointerup', 640, 150, 1, 'touch');
     fixture.detectChanges();
     expect(component.activeView()).toBe('menu');
     fixture.destroy();
     vi.useRealTimers();
   });
+
+  it.each(['off', 'columns', 'adaptive'] as const)(
+    'abre el menú con deslizamiento hacia abajo sin cambiar la escena en modo %s',
+    async (collageMode) => {
+      vi.useFakeTimers();
+      servedManifest = {
+        ...manifest,
+        settings: { ...DEFAULT_FRAME_SETTINGS, collageMode },
+        media: [photo, secondPhoto, thirdPhoto, video]
+          .map((entry) => ({ ...entry, width: 670, height: 1000 })),
+      };
+      const fixture = TestBed.createComponent(App);
+      fixture.detectChanges();
+      await vi.advanceTimersByTimeAsync(0);
+      await makeStagedSceneReady(fixture);
+      const compiled = fixture.nativeElement as HTMLElement;
+      const frame = compiled.querySelector('main') as HTMLElement;
+      const component = fixture.componentInstance as any;
+      const key = component.currentScene().key;
+      setViewerBounds(frame);
+      expect(compiled.querySelector('.collage-menu')).toBeNull();
+      dispatchPointer(frame, 'pointerdown', 640, 20, 1, 'touch');
+      dispatchPointer(frame, 'pointermove', 645, 90, 1, 'touch');
+      dispatchPointer(frame, 'pointerup', 645, 150, 1, 'touch');
+      fixture.detectChanges();
+      expect(component.activeView()).toBe('menu');
+      expect(compiled.querySelector('[aria-label="Menú de Naiskos"]')).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(31_000);
+      fixture.detectChanges();
+      expect(component.currentScene().key).toBe(key);
+      expect(compiled.querySelector('.stage--staging')).toBeNull();
+      fixture.destroy();
+      vi.useRealTimers();
+    },
+  );
 
   it('cancela una escena incompleta al entrar en reposo e ignora las cargas tardías', async () => {
     vi.useFakeTimers();
@@ -475,7 +512,7 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
-  it('en collage ignora arrastre y pellizco pero mantiene el toque para avanzar', async () => {
+  it('en collage ignora arrastre horizontal y pellizco pero mantiene el toque para avanzar', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
       media: [photo, secondPhoto, thirdPhoto, { ...photo, id: 'fourth', url: '/fourth' }]

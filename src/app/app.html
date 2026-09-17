@@ -218,10 +218,6 @@
     <span class="navigation-hint navigation-hint--left" aria-hidden="true">‹</span>
     <span class="navigation-hint navigation-hint--right" aria-hidden="true">›</span>
   }
-  @if (collageEnabled() && !overlayOpen() && !reposeActive()) {
-    <button class="collage-menu" type="button" (pointerdown)="$event.stopPropagation()"
-      (click)="openMainMenu()" aria-label="Abrir menú">Menú</button>
-  }
 
   <div class="preload" aria-hidden="true">
     @for (url of preloadUrls(); track url) {

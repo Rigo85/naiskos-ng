@@ -23,7 +23,7 @@ export interface FrameSettings {
 
 export const DEFAULT_FRAME_SETTINGS: FrameSettings = {
   collageMode: 'off',
-  collageBackground: 'black',
+  collageBackground: 'material',
   photoDurationSeconds: 30,
   order: 'newest',
   defaultFitMode: 'contain',

@@ -4,6 +4,9 @@ import { DEFAULT_FRAME_SETTINGS, FrameManifest, MediaItem } from './models';
 import { orderManifestMedia } from './slideshow-policy';
 
 describe('fondos decorativos', () => {
+  it('usa tonos del material como preferencia inicial', () => {
+    expect(DEFAULT_FRAME_SETTINGS.collageBackground).toBe('material');
+  });
   it('valida colores y no acepta CSS ni recursos externos', () => {
     for (const colors of [null, undefined, ['red', 'blue'], ['#123456', 'url(https://invalid)']]) {
       expect(collageBackground({ bandColors: colors } as MediaItem, true)).toBe('#000');

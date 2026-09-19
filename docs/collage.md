@@ -8,12 +8,19 @@ En **Configuración → Presentación** se puede elegir:
 - **Mosaico adaptable**: plantillas de dos o tres columnas, algunas divididas
   en dos filas; hasta cuatro medios en esta primera versión. Las proporciones
   orientan la elección, pero no prohíben colocar horizontales en columnas altas.
+  Además, aproximadamente el 25% de las decisiones de escena elige una foto o
+  video individual. No es una cuota exacta: las escenas individuales necesarias
+  por falta de acompañantes o dimensiones pueden aumentar esa proporción.
 
 La biblioteca se agrupa después de aplicar el orden configurado. El siguiente
 material pendiente inicia cada escena y se buscan acompañantes entre los seis
 primeros pendientes. Los no elegidos conservan su prioridad. Cada elemento se
 usa una vez por vuelta. La agrupación permanece estable hasta que cambia la
 biblioteca o la configuración; no se sortea nuevamente en cada transición.
+El sorteo de escenas individuales del adaptable usa una semilla por sesión del
+visor: no cambia por reposo, colores ni versión del manifiesto. Reiniciar el visor
+puede cambiar qué elementos se presentan solos. No modifica el orden configurado,
+no duplica elementos ni cambia la agrupación de **Columnas verticales**.
 
 ## Distribuciones y bandas
 
@@ -24,11 +31,15 @@ aprovechamiento geométrico, penalizando también la peor celda. La prioridad de
 primer material no obliga a que ocupe la celda izquierda. No se generan divisiones
 recursivas ni se fuerzan cuatro materiales si dos o tres encajan mejor.
 
-**Fondo de bandas del collage** permite `Negro` (valor inicial) o `Tonos del material`.
+**Fondo de bandas del collage** permite `Tonos del material` (valor inicial) o `Negro`.
 El servidor entrega dos colores suaves de la foto completa o del póster de video.
 El visor sólo dibuja un gradiente estático, sin análisis, desenfoque ni dependencias
 nuevas. La presentación individual conserva el fondo negro. Los colores ausentes
 o inválidos también se sustituyen por negro, sin rechazar el material.
+**Ambos modos collage comparten los fondos en tonos y los bordes finos entre
+celdas**. Columnas verticales conserva su agrupación sin filas; sólo el adaptable
+añade el sorteo de escenas individuales. Las escenas de una sola celda no llevan
+divisores y mantienen las mismas reglas de duración y reproducción.
 
 El orden aleatorio es estable por identidad, no por versión de manifiesto. Al
 migrar desde la versión inicial puede cambiar una vez; después, añadir colores,
@@ -64,7 +75,8 @@ quedan fotos, éstas utilizan el temporizador fotográfico.
 ## Contrato y compatibilidad
 
 - `settings.collageMode`: `off`, `columns` o `adaptive`; ausencia equivale a `off`.
-- `settings.collageBackground`: `black` o `material`; ausencia equivale a `black`.
+- `settings.collageBackground`: `black` o `material`; ausencia equivale a `material`.
+  Se conserva una elección explícita de `black`. Sin colores válidos se muestra negro.
 - `media[].bandColors`: pareja opcional de colores hexadecimales `#rrggbb`, o null.
   No interviene en la identidad/hash del archivo ni en el orden o agrupación.
 - `media[].width` y `height`: dimensiones positivas opcionales del material

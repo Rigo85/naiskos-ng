@@ -749,11 +749,14 @@
                     <option value="adaptive">Collage: mosaico adaptable</option>
                   </select>
                   <small>Collage sin leyendas ni zoom. Conserva el encuadre de cada material.</small>
+                  @if (settingsDraft.collageMode === 'adaptive') {
+                    <small>Alterna mosaicos con fotos o videos individuales, aproximadamente una de cada cuatro escenas.</small>
+                  }
                 </label>
                 @if (settingsDraft.collageMode && settingsDraft.collageMode !== 'off') {
                   <label class="field">
                     <span>Fondo de bandas del collage</span>
-                    <select [value]="settingsDraft.collageBackground || 'black'"
+                    <select [value]="settingsDraft.collageBackground || 'material'"
                       (change)="settingsDraft.collageBackground = $any($event.target).value">
                       <option value="black">Negro</option>
                       <option value="material">Tonos del material</option>

@@ -276,6 +276,8 @@ export class App implements OnDestroy {
   );
   protected readonly media = computed(() => this.manifest()?.media ?? []);
   private readonly sceneCache = new WeakMap<FrameManifest, MediaScene[]>();
+  // Choose once per viewer session, never on resume, preference changes or sync.
+  private readonly adaptiveMixSeed = Math.floor(Math.random() * 0x1_0000_0000);
   private readonly committedScene = signal<MediaScene | null>(null);
   protected readonly collageEnabled = computed(() => (this.settings().collageMode ?? 'off') !== 'off');
   protected readonly currentScene = computed(() => {
@@ -2710,7 +2712,8 @@ export class App implements OnDestroy {
   private scenesFor(manifest: FrameManifest): MediaScene[] {
     let scenes = this.sceneCache.get(manifest);
     if (!scenes) {
-      scenes = buildScenes(manifest.media, manifest.settings.collageMode ?? 'off', window.innerWidth / window.innerHeight);
+      scenes = buildScenes(manifest.media, manifest.settings.collageMode ?? 'off',
+        window.innerWidth / window.innerHeight, this.adaptiveMixSeed);
       this.sceneCache.set(manifest, scenes);
     }
     return scenes;
@@ -3088,7 +3091,8 @@ export class App implements OnDestroy {
   }
 
   protected backgroundFor(item: MediaItem): string {
-    return collageBackground(item, this.collageEnabled() && this.settings().collageBackground === 'material');
+    return collageBackground(item, this.collageEnabled() &&
+      (this.settings().collageBackground ?? DEFAULT_FRAME_SETTINGS.collageBackground) === 'material');
   }
 }
 

@@ -113,6 +113,19 @@ function ratio(item: MediaItem): number | null {
     : null;
 }
 
+function adaptiveSolo(id: string, seed: number): boolean {
+  // A seeded draw per anchor: independent of manifest version, colors and timing.
+  // Avalanche spreads similar/sequential IDs across the 32-bit interval.
+  let hash = (2166136261 ^ seed) >>> 0;
+  for (const char of `adaptive-solo:${id}`) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  hash ^= hash >>> 16;
+  return (hash >>> 0) >= 0xc0000000; // Last quarter: 25% of scene decisions, not media.
+}
+
 export function singleScene(item: MediaItem): MediaScene {
   return makeScene([item], [[0, 0, 1, 1]]);
 }
@@ -150,6 +163,7 @@ export function buildScenes(
   media: MediaItem[],
   mode: CollageMode = 'off',
   aspect = 1.6,
+  adaptiveMixSeed = 0,
 ): MediaScene[] {
   if (mode === 'off') return media.map(singleScene);
   const used = new Set<number>();
@@ -159,7 +173,8 @@ export function buildScenes(
     if (used.has(cursor)) { used.delete(cursor); continue; }
     const anchor = media[cursor];
     const anchorRatio = ratio(anchor);
-    if (anchorRatio === null || (mode === 'columns' && anchorRatio >= 1)) {
+    if (anchorRatio === null || (mode === 'columns' && anchorRatio >= 1) ||
+      (mode === 'adaptive' && adaptiveSolo(anchor.id, adaptiveMixSeed))) {
       scenes.push(singleScene(anchor));
       continue;
     }

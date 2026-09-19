@@ -27,6 +27,32 @@ const item = (
 });
 
 describe('collage básico', () => {
+  it('mezcla aproximadamente un 25% de escenas individuales, incluyendo fotos y videos', () => {
+    const media = Array.from({ length: 4000 }, (_, i) => item(`sample-${i}`, 670, 1000, i % 5 ? 'photo' : 'video'));
+    const scenes = buildScenes(media, 'adaptive', 1.6, 12345);
+    const solos = scenes.filter((scene) => scene.cells.length === 1);
+    expect(solos.length / scenes.length).toBeGreaterThan(0.20);
+    expect(solos.length / scenes.length).toBeLessThan(0.30);
+    expect(solos.some((scene) => scene.driver.kind === 'photo')).toBe(true);
+    expect(solos.some((scene) => scene.driver.kind === 'video')).toBe(true);
+    expect(solos.every((scene) => scene.cells[0].width === 1 && scene.cells[0].height === 1)).toBe(true);
+    const ids = scenes.flatMap((scene) => scene.cells.map((cell) => cell.item.id));
+    expect(ids.length).toBe(media.length);
+    expect(new Set(ids).size).toBe(media.length);
+    for (const scene of scenes) expect(scene.cells.filter((cell) => cell.item.kind === 'video').length).toBeLessThanOrEqual(1);
+  });
+
+  it('fija el sorteo durante la sesión sin que colores o versiones alteren agrupación', () => {
+    const media = Array.from({ length: 80 }, (_, i) => item(`sample-${i}`));
+    const original = buildScenes(media, 'adaptive', 1.6, 42);
+    const decorated = buildScenes(media.map((entry) => ({ ...entry, bandColors: ['#123456', '#654321'] as [string, string] })), 'adaptive', 1.6, 42);
+    expect(decorated.map((scene) => scene.key)).toEqual(original.map((scene) => scene.key));
+    expect(buildScenes(media, 'adaptive', 1.6, 43).map((scene) => scene.key)).not.toEqual(original.map((scene) => scene.key));
+    for (const mode of ['off', 'columns'] as const) {
+      expect(buildScenes(media, mode, 1.6, 42)).toEqual(buildScenes(media, mode, 1.6, 43));
+    }
+  });
+
   it('elige anchos diferentes sin alterar la prioridad del material inicial', () => {
     const scene = buildScenes([item('1', 480), item('2', 1120)], 'adaptive')[0];
     expect(scene.cells.map((c) => c.width)).toEqual([0.3, 0.7]);
@@ -110,15 +136,17 @@ describe('collage básico', () => {
         item(String(index + 1), index % 3 ? 600 : 1600),
       );
       const ordered = orderManifestMedia(media, order, 3);
-      const scenes = buildScenes(ordered, 'columns');
-      expect(scenes[0].cells[0].item.id).toBe(ordered[0].id);
-      const ids = scenes.flatMap((scene) => scene.cells.map((cell) => cell.item.id));
-      expect(ids.length).toBe(media.length);
-      expect(new Set(ids).size).toBe(media.length);
-      const shown = new Set<string>();
-      for (const scene of scenes) {
-        expect(scene.cells[0].item.id).toBe(ordered.find((entry) => !shown.has(entry.id))!.id);
-        scene.cells.forEach((cell) => shown.add(cell.item.id));
+      for (const mode of ['columns', 'adaptive'] as const) {
+        const scenes = buildScenes(ordered, mode);
+        expect(scenes[0].cells[0].item.id).toBe(ordered[0].id);
+        const ids = scenes.flatMap((scene) => scene.cells.map((cell) => cell.item.id));
+        expect(ids.length).toBe(media.length);
+        expect(new Set(ids).size).toBe(media.length);
+        const shown = new Set<string>();
+        for (const scene of scenes) {
+          expect(scene.cells[0].item.id).toBe(ordered.find((entry) => !shown.has(entry.id))!.id);
+          scene.cells.forEach((cell) => shown.add(cell.item.id));
+        }
       }
     },
   );

@@ -314,6 +314,31 @@ describe('App', () => {
     fixture.destroy();
   });
 
+  it.each(['columns', 'adaptive'] as const)('comparte fondos y bordes en %s sin trasladarlos al modo individual', async (collageMode) => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode },
+      media: [photo, secondPhoto].map((entry, index) => ({ ...entry, id: String(index + 1),
+        width: 800, height: 1000, bandColors: ['#123456', '#abcdef'] as [string, string] })) };
+    const fixture = TestBed.createComponent(App);
+    const component = fixture.componentInstance as any;
+    component.adaptiveMixSeed = 0;
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const cells = (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLElement>('.stage--stable .scene-cell');
+    expect(cells).toHaveLength(2);
+    for (const cell of cells) {
+      expect(cell.classList.contains('scene-cell--collage')).toBe(true);
+      expect(cell.style.background).toContain('linear-gradient');
+    }
+    component.replaceSettings({ ...component.settings(), collageBackground: 'black' });
+    expect(component.backgroundFor(servedManifest.media[0])).toBe('#000');
+    component.replaceSettings({ ...component.settings(), collageMode: 'off', collageBackground: 'material' });
+    expect(component.backgroundFor(servedManifest.media[0])).toBe('#000');
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('prepara todas las fotos del collage antes de mostrarlo y cuenta una sola duración', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },

@@ -71,7 +71,7 @@
         <img
           #photoElement
           class="media media--photo"
-          [class.media--cover]="fitModeFor(item, settings()) === 'cover'"
+          [class.media--cover]="fitModeFor(item, settings()) === 'cover' || (cell.automaticCover && item.fitMode === 'inherit')"
           [class.media--zoomed]="photoIsZoomed(item.id)"
           [style.transform]="photoTransformStyle(item.id)"
           [src]="item.url"

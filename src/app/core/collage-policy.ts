@@ -1,4 +1,5 @@
-import { CollageMode, FrameManifest, MediaItem } from './models';
+import { CollageMode, FitMode, FrameManifest, MediaItem } from './models';
+import { refineCollageFit } from './collage-fit';
 import { navigationPlan, NavigationCandidate, NavigationPlanInput } from './navigation-policy';
 
 export interface SceneCell {
@@ -7,6 +8,7 @@ export interface SceneCell {
   top: number;
   width: number;
   height: number;
+  automaticCover?: boolean;
 }
 
 export interface MediaScene {
@@ -15,6 +17,7 @@ export interface MediaScene {
   cells: SceneCell[];
   layoutMode?: CollageMode;
   aspect?: number;
+  fitRefined?: boolean;
 }
 
 export interface SceneCandidate extends NavigationCandidate {
@@ -128,6 +131,20 @@ function adaptiveSolo(id: string, seed: number): boolean {
 
 export function singleScene(item: MediaItem): MediaScene {
   return makeScene([item], [[0, 0, 1, 1]]);
+}
+
+/** Called only for the candidate about to be prepared. Never refines every
+ * scene at startup, nor re-refines an already adjusted scene (no drift). */
+export function refineScene(scene: MediaScene, defaultFit: FitMode): MediaScene {
+  if (scene.cells.length < 2 || scene.fitRefined) return scene;
+  const items = scene.cells.map((cell) => cell.item);
+  const fit = refineCollageFit(items, scene.cells.map((c) => [c.left, c.top, c.width, c.height]),
+    scene.aspect ?? 1.6, defaultFit);
+  const refined = makeScene(items, fit.rectangles, scene.layoutMode, scene.aspect);
+  return { ...refined, fitRefined: true,
+    key: refined.key + ':' + JSON.stringify(fit.automaticCover),
+    cells: refined.cells.map((cell, i) => ({ ...cell, automaticCover: fit.automaticCover[i] })),
+  };
 }
 
 export function omitSceneItems(

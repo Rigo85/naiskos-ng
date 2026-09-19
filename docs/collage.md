@@ -48,7 +48,37 @@ exclusivamente decorativa conserva la escena, preparación, temporizadores y
 reproducción actuales; sus colores entran en una transición natural. Cambiar el
 fondo o el volumen no vuelve a ejecutar la búsqueda de distribuciones.
 
-Cada celda respeta `contain`/`cover` y `inherit`. No hay reconocimiento de sujetos.
+### Ajuste de encuadre con recorte limitado
+
+En ambos modos, una vez elegidos los materiales y la distribución, se ajustan
+los anchos hasta ±8 puntos porcentuales (columnas del 22–78 % de la pantalla)
+y las filas divididas al 35–65 %. No cambia la selección, el orden ni el número
+de columnas/filas; no hay subdivisiones recursivas.
+
+Una **foto con `inherit`** puede rellenar su celda con un recorte centrado de
+hasta el 8 % del área, incluso si el marco tiene `contain` como valor global.
+Si requiere más, conserva bandas. **`contain` explícito en la foto siempre
+impide el recorte**; `cover` explícito o heredado conserva su comportamiento.
+Los videos no reciben recorte automático. Fotos y videos individuales tampoco
+cambian. No se modifica ninguna preferencia persistida.
+
+Se evalúan geometría y recorte juntos: se descartan propuestas que aumenten
+las bandas totales. Dentro de un punto porcentual de pantalla del mínimo de
+bandas, se prefiere mejorar la peor celda; después, menor recorte medio,
+menor recorte máximo y menor movimiento de divisiones. Sin reducción real de
+bandas se conserva la distribución inicial. Son constantes internas, no nuevas
+opciones. No hay reconocimiento de sujetos: el área recortada no mide la
+importancia de lo que aparece junto a los bordes.
+
+El cálculo se hace sólo para la escena que va a prepararse, no para toda la
+biblioteca al arrancar. Dos pasadas acotadas retienen un único resultado; una
+caché de hasta 64 geometrías reutiliza proporciones, sin guardar imágenes ni
+referencias a medios. Una escena ya ajustada no vuelve a ajustarse al pasar
+por reposo o reintentos. Si falla un material, se recompone el grupo restante
+desde una plantilla base, aplicando los mismos límites. Los cambios de encuadre
+explícito se respetan inmediatamente; la geometría se recalcula al preparar
+la siguiente escena, sin interrumpir el video visible.
+
 Mientras se selecciona un modo collage se ocultan leyendas y remitentes, sin
 modificar sus preferencias globales. Reloj y clima siguen en su lugar.
 
@@ -91,6 +121,7 @@ quedan fotos, éstas utilizan el temporizador fotográfico.
   elementos que gobiernan cada escena.
 
 `core/collage-policy.ts` concentra agrupación y adaptación de navegación.
+`core/collage-fit.ts` contiene el ajuste geométrico y de recorte acotado.
 `app.spec.ts` verifica integración con preparación, video, reposo y preferencias.
 No se requiere una biblioteca nueva ni generar collages como archivos de imagen.
 

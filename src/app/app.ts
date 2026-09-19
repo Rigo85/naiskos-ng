@@ -52,7 +52,7 @@ import {
   MediaFailureRegistry,
 } from './core/navigation-policy';
 import {
-  buildScenes, MediaScene, omitSceneItems, SceneCandidate, sceneNavigationPlan,
+  buildScenes, MediaScene, omitSceneItems, refineScene, SceneCandidate, sceneNavigationPlan,
 } from './core/collage-policy';
 
 type SlidePhase = 'stable' | 'staging' | 'outgoing' | 'incoming';
@@ -2065,7 +2065,7 @@ export class App implements OnDestroy {
       const available = omitSceneItems(candidate.scene, (item) =>
         this.unavailableMedia.contains(item) || (item.kind === 'video' && this.isVideoQuarantined(item)));
       if (!available) continue;
-      candidate = { ...candidate, scene: available, item: available.driver };
+      candidate = { ...candidate, scene: refineScene(available, candidate.manifest.settings.defaultFitMode), item: available.driver };
       if (outgoing && candidate.scene.key === this.currentScene()?.key) {
         if (candidates.length === 1) {
           if (candidate.manifest.version !== active.version) {

@@ -339,6 +339,37 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('renderiza el recorte aprobado sólo en fotos heredadas y mantiene contain explícito al editar', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('innerWidth', 1280);
+    vi.stubGlobal('innerHeight', 800);
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
+      media: [photo, secondPhoto].map((entry) => ({ ...entry, width: 760, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    const component = fixture.componentInstance as any;
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const compiled = fixture.nativeElement as HTMLElement;
+    expect(compiled.querySelectorAll('.stage--stable img.media--cover')).toHaveLength(2);
+    const key = component.currentScene().key;
+    component.applyReposeState({ ...awakeRepose, active: true, updatedAt: '2026-09-18T12:00:00Z' });
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(component.currentScene().key).toBe(key);
+    component.applyReposeState({ ...awakeRepose, active: false, updatedAt: '2026-09-18T12:01:00Z' });
+    fixture.detectChanges();
+    expect(component.currentScene().key).toBe(key);
+    component.replaceMedia({ ...servedManifest.media[0], fitMode: 'contain' });
+    fixture.detectChanges();
+    expect(compiled.querySelectorAll('.stage--stable img.media--cover')).toHaveLength(1);
+    component.replaceSettings({ ...component.settings(), defaultFitMode: 'cover' });
+    fixture.detectChanges();
+    expect(compiled.querySelectorAll('.stage--stable img.media--cover')).toHaveLength(1);
+    fixture.destroy();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
   it('prepara todas las fotos del collage antes de mostrarlo y cuenta una sola duración', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },

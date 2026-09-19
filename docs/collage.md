@@ -15,6 +15,28 @@ primeros pendientes. Los no elegidos conservan su prioridad. Cada elemento se
 usa una vez por vuelta. La agrupación permanece estable hasta que cambia la
 biblioteca o la configuración; no se sortea nuevamente en cada transición.
 
+## Distribuciones y bandas
+
+El catálogo incluye columnas completas iguales o de ancho diferente, una columna
+completa junto a otra dividida en dos filas (a cualquiera de los lados), cuadrícula
+2×2 y dos columnas completas junto a una dividida. Las posiciones se comparan por
+aprovechamiento geométrico, penalizando también la peor celda. La prioridad del
+primer material no obliga a que ocupe la celda izquierda. No se generan divisiones
+recursivas ni se fuerzan cuatro materiales si dos o tres encajan mejor.
+
+**Fondo de bandas del collage** permite `Negro` (valor inicial) o `Tonos del material`.
+El servidor entrega dos colores suaves de la foto completa o del póster de video.
+El visor sólo dibuja un gradiente estático, sin análisis, desenfoque ni dependencias
+nuevas. La presentación individual conserva el fondo negro. Los colores ausentes
+o inválidos también se sustituyen por negro, sin rechazar el material.
+
+El orden aleatorio es estable por identidad, no por versión de manifiesto. Al
+migrar desde la versión inicial puede cambiar una vez; después, añadir colores,
+miniaturas u otros metadatos no vuelve a sortear la biblioteca. Una publicación
+exclusivamente decorativa conserva la escena, preparación, temporizadores y
+reproducción actuales; sus colores entran en una transición natural. Cambiar el
+fondo o el volumen no vuelve a ejecutar la búsqueda de distribuciones.
+
 Cada celda respeta `contain`/`cover` y `inherit`. No hay reconocimiento de sujetos.
 Mientras se selecciona un modo collage se ocultan leyendas y remitentes, sin
 modificar sus preferencias globales. Reloj y clima siguen en su lugar.
@@ -35,10 +57,16 @@ Sólo se renderizan la escena visible y la candidata. Todos sus archivos deben
 cargar antes del crossfade. Un archivo fallido se identifica, se notifica al
 agente y se retira temporalmente; se intenta preparar el resto de esa escena.
 Si no queda ninguno, continúa la búsqueda existente, con sus límites y reintentos.
+La recomposición de supervivientes usa el mismo selector de disposición y modo,
+sin añadir acompañantes ni eliminar supervivientes sanos. Si falla el video y
+quedan fotos, éstas utilizan el temporizador fotográfico.
 
 ## Contrato y compatibilidad
 
 - `settings.collageMode`: `off`, `columns` o `adaptive`; ausencia equivale a `off`.
+- `settings.collageBackground`: `black` o `material`; ausencia equivale a `black`.
+- `media[].bandColors`: pareja opcional de colores hexadecimales `#rrggbb`, o null.
+  No interviene en la identidad/hash del archivo ni en el orden o agrupación.
 - `media[].width` y `height`: dimensiones positivas opcionales del material
   procesado. Sirven para proporciones, no para reconstruir archivos originales.
   Las miniaturas están recortadas y no sirven para obtener esas proporciones.
@@ -54,5 +82,5 @@ Si no queda ninguno, continúa la búsqueda existente, con sus límites y reinte
 `app.spec.ts` verifica integración con preparación, video, reposo y preferencias.
 No se requiere una biblioteca nueva ni generar collages como archivos de imagen.
 
-Estado inicial: pruebas locales; aceptación visual y rendimiento sobre el
-dispositivo pendientes. Instalar mediante el mecanismo normal de releases.
+La aceptación visual de cada nueva versión se realiza sobre el dispositivo.
+Instalar mediante el mecanismo normal de releases firmadas.

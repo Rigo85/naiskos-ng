@@ -1,3 +1,4 @@
+import { collageBackground, samePlaybackContent } from './core/collage-background';
 import {
   Component,
   afterNextRender,
@@ -1890,6 +1891,23 @@ export class App implements OnDestroy {
       return;
     }
     const orderedNext = this.orderManifest(next);
+    const comparable = this.pendingManifest() ?? current;
+    if (comparable && samePlaybackContent(comparable, orderedNext)) {
+      const items = new Map(orderedNext.media.map((item) => [item.id, item]));
+      this.sceneCache.set(orderedNext, this.scenesFor(comparable).map((scene) => ({
+        ...scene, driver: items.get(scene.driver.id)!,
+        cells: scene.cells.map((cell) => ({ ...cell, item: items.get(cell.item.id)! })),
+      })));
+      // Keep DOM, timers, video intent and an in-flight preparation intact. New palettes
+      // become visible at the next natural scene boundary, never halfway through a fade.
+      if (this.pendingManifest() || this.preparingTransition() || this.crossfade()) {
+        this.pendingManifest.set(orderedNext);
+      } else {
+        this.committedScene.set(this.currentScene());
+        this.manifest.set(orderedNext);
+      }
+      return;
+    }
     const pendingOperation = this.galleryOperation();
     if (pendingOperation) {
       const operatedItem = orderedNext.media.find((item) => item.id === pendingOperation.mediaId);
@@ -2668,6 +2686,7 @@ export class App implements OnDestroy {
       const next = this.orderManifest({ ...manifest, settings });
       const regroup = manifest.settings.order !== settings.order ||
         (manifest.settings.collageMode ?? 'off') !== (settings.collageMode ?? 'off');
+      if (!regroup) this.sceneCache.set(next, this.scenesFor(manifest));
       if (regroup) {
         const currentScene = this.currentScene();
         this.cancelNavigation();
@@ -3066,6 +3085,10 @@ export class App implements OnDestroy {
 
   protected fitModeFor(item: MediaItem, settings: FrameSettings): FitMode {
     return item.fitMode === 'inherit' ? settings.defaultFitMode : item.fitMode;
+  }
+
+  protected backgroundFor(item: MediaItem): string {
+    return collageBackground(item, this.collageEnabled() && this.settings().collageBackground === 'material');
   }
 }
 

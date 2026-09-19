@@ -63,6 +63,8 @@
       @for (cell of slide.scene.cells; track mediaIdentity(cell.item)) {
       @let item = cell.item;
       <div class="scene-cell"
+        [class.scene-cell--collage]="slide.scene.cells.length > 1"
+        [style.background]="backgroundFor(item)"
         [style.left.%]="cell.left * 100" [style.top.%]="cell.top * 100"
         [style.width.%]="cell.width * 100" [style.height.%]="cell.height * 100">
       @if (item.kind === 'photo') {
@@ -748,6 +750,17 @@
                   </select>
                   <small>Collage sin leyendas ni zoom. Conserva el encuadre de cada material.</small>
                 </label>
+                @if (settingsDraft.collageMode && settingsDraft.collageMode !== 'off') {
+                  <label class="field">
+                    <span>Fondo de bandas del collage</span>
+                    <select [value]="settingsDraft.collageBackground || 'black'"
+                      (change)="settingsDraft.collageBackground = $any($event.target).value">
+                      <option value="black">Negro</option>
+                      <option value="material">Tonos del material</option>
+                    </select>
+                    <small>Sin colores disponibles se utiliza negro. No cambia la presentación individual.</small>
+                  </label>
+                }
                 <label class="field">
                   <span>Duración de fotografías y pausa de video</span>
                   <div class="range-row">

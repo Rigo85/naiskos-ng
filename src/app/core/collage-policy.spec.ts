@@ -27,6 +27,35 @@ const item = (
 });
 
 describe('collage básico', () => {
+  it('elige anchos diferentes sin alterar la prioridad del material inicial', () => {
+    const scene = buildScenes([item('1', 480), item('2', 1120)], 'adaptive')[0];
+    expect(scene.cells.map((c) => c.width)).toEqual([0.3, 0.7]);
+    expect(scene.cells[0].item.id).toBe('1');
+  });
+
+  it('puede colocar la columna completa a ambos lados y una horizontal inicial en una fila', () => {
+    const scene = buildScenes([item('1', 560), item('2', 2080), item('3', 2080)], 'adaptive')[0];
+    expect(scene.cells).toHaveLength(3);
+    expect(scene.cells[0].height).toBe(1);
+    expect(scene.cells[0].width).toBeLessThan(0.5);
+    const otherSide = buildScenes([item('2', 560), item('3', 2080), item('4', 2080)], 'adaptive')[0];
+    expect(scene.cells[0].left).toBeGreaterThan(0);
+    expect(otherSide.cells[0].left).toBe(0);
+    const reverse = buildScenes([item('2', 2080), item('1', 560), item('3', 2080)], 'adaptive')[0];
+    expect(reverse.cells[0].height).toBe(0.5);
+    expect(reverse.cells[1].height).toBe(1);
+    expect(reverse.cells[0].item.id).toBe('2');
+  });
+
+  it('recompone todos los supervivientes con el selector del modo original', () => {
+    const media = [item('1', 400), item('2', 400), item('3', 1600), item('4', 1600)];
+    const scene = buildScenes(media, 'adaptive')[0];
+    const survivors = omitSceneItems(scene, (entry) => entry.id === '2')!;
+    expect(survivors.cells.map((c) => c.item.id)).toEqual(['1', '3', '4']);
+    expect(survivors.cells.some((c) => c.height === 0.5)).toBe(true);
+    expect(survivors.layoutMode).toBe('adaptive');
+  });
+
   it('conserva el modo individual y los manifiestos sin dimensiones', () => {
     const photos = [item('1'), { ...item('2'), width: undefined }];
     expect(buildScenes(photos).map((scene) => scene.cells.length)).toEqual([1, 1]);

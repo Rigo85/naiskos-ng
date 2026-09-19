@@ -5,6 +5,7 @@ export type CollageMode = 'off' | 'columns' | 'adaptive';
 
 export interface FrameSettings {
   collageMode: CollageMode;
+  collageBackground: 'black' | 'material';
   photoDurationSeconds: number;
   order: DisplayOrder;
   defaultFitMode: FitMode;
@@ -22,6 +23,7 @@ export interface FrameSettings {
 
 export const DEFAULT_FRAME_SETTINGS: FrameSettings = {
   collageMode: 'off',
+  collageBackground: 'black',
   photoDurationSeconds: 30,
   order: 'newest',
   defaultFitMode: 'contain',
@@ -67,6 +69,7 @@ export const EMPTY_WEATHER: WeatherSnapshot = {
 };
 
 export interface MediaItem {
+  bandColors?: [string, string] | null;
   width?: number | null;
   height?: number | null;
   id: string;

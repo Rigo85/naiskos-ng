@@ -13,6 +13,8 @@ export interface MediaScene {
   key: string;
   driver: MediaItem;
   cells: SceneCell[];
+  layoutMode?: CollageMode;
+  aspect?: number;
 }
 
 export interface SceneCandidate extends NavigationCandidate {
@@ -55,6 +57,53 @@ const TEMPLATES: Record<number, Rectangle[][]> = {
   ],
 };
 
+// Finite catalogue: no nested partitions, dynamic optimizer or library-wide search.
+const WIDTHS = [0.5, 0.4, 0.6, 0.3, 0.7];
+const COLUMNS: Record<number, Rectangle[][]> = {
+  2: WIDTHS.map((w) => [[0, 0, w, 1], [w, 0, 1 - w, 1]]),
+  3: [TEMPLATES[3][0], ...[
+    [0.25, 0.35, 0.4], [0.25, 0.4, 0.35], [0.35, 0.25, 0.4],
+    [0.35, 0.4, 0.25], [0.4, 0.25, 0.35], [0.4, 0.35, 0.25],
+  ].map(([a, b, c]): Rectangle[] => [[0, 0, a, 1], [a, 0, b, 1], [a + b, 0, c, 1]])],
+};
+
+function permutations<T>(values: T[]): T[][] {
+  if (values.length <= 1) return [values];
+  return values.flatMap((value, index) =>
+    permutations(values.filter((_, i) => i !== index)).map((rest) => [value, ...rest]));
+}
+
+const ADAPTIVE: Record<number, Rectangle[][]> = {
+  2: COLUMNS[2],
+  3: [...COLUMNS[3], ...WIDTHS.flatMap((w) => {
+    const cells: Rectangle[] = [[0, 0, w, 1], [w, 0, 1 - w, 0.5], [w, 0.5, 1 - w, 0.5]];
+    return permutations(cells);
+  })],
+  4: TEMPLATES[4].flatMap(permutations),
+};
+
+function chooseLayout(items: MediaItem[], mode: CollageMode, aspect: number) {
+  const templates = (mode === 'columns' ? COLUMNS : ADAPTIVE)[items.length];
+  let best = templates[0];
+  let cost = Infinity;
+  const ratios = items.map((item) => ratio(item) ?? 1);
+  for (const rectangles of templates) {
+    const penalties = rectangles.map(([, , width, height], index) =>
+      Math.abs(Math.log(aspect * width / height / ratios[index])));
+    // Penalize the worst cell too; an average must not hide a badly fitted companion.
+    // With centered contain/cover this geometric mismatch measures both bands/crop.
+    const value = 0.75 * penalties.reduce((a, b) => a + b, 0) / items.length +
+      0.25 * Math.max(...penalties);
+    if (value < cost - 1e-9) { cost = value; best = rectangles; }
+  }
+  // Mirroring has exactly the same geometric score. Break that tie by stable
+  // identity, not by random transition time; otherwise one side would never win.
+  const mirror = mode === 'adaptive' && items.length >= 3 &&
+    [...items[0].id].reduce((hash, char) => (Math.imul(hash, 31) ^ char.charCodeAt(0)) >>> 0, 0) % 2 === 1;
+  return { rectangles: mirror ? best.map(([x, y, width, height]): Rectangle =>
+    [Math.max(0, 1 - x - width), y, width, height]) : best, cost };
+}
+
 function ratio(item: MediaItem): number | null {
   return Number.isFinite(item.width) &&
     Number.isFinite(item.height) &&
@@ -75,11 +124,16 @@ export function omitSceneItems(
   const items = scene.cells.map((cell) => cell.item).filter((item) => !omit(item));
   if (items.length === scene.cells.length) return scene;
   if (items.length === 0) return null;
-  return items.length === 1 ? singleScene(items[0]) : makeScene(items, TEMPLATES[items.length][0]);
+  if (items.length === 1) return singleScene(items[0]);
+  const mode = scene.layoutMode ?? 'adaptive';
+  const aspect = scene.aspect ?? 1.6;
+  return makeScene(items, chooseLayout(items, mode, aspect).rectangles, mode, aspect);
 }
 
-function makeScene(items: MediaItem[], rectangles: Rectangle[]): MediaScene {
+function makeScene(items: MediaItem[], rectangles: Rectangle[], layoutMode: CollageMode = 'off', aspect = 1.6): MediaScene {
   return {
+    layoutMode,
+    aspect,
     key:
       items.map((item) => `${item.id}:${item.sha256}`).join('|') + ':' + JSON.stringify(rectangles),
     // Keep the existing video lifecycle as the sole clock for a mixed scene.
@@ -98,23 +152,30 @@ export function buildScenes(
   aspect = 1.6,
 ): MediaScene[] {
   if (mode === 'off') return media.map(singleScene);
-  const remaining = [...media];
+  const used = new Set<number>();
   const scenes: MediaScene[] = [];
   const screenRatio = Number.isFinite(aspect) && aspect > 0 ? aspect : 1.6;
-  while (remaining.length) {
-    const anchor = remaining[0];
+  for (let cursor = 0; cursor < media.length; cursor += 1) {
+    if (used.has(cursor)) { used.delete(cursor); continue; }
+    const anchor = media[cursor];
     const anchorRatio = ratio(anchor);
     if (anchorRatio === null || (mode === 'columns' && anchorRatio >= 1)) {
-      scenes.push(singleScene(remaining.shift()!));
+      scenes.push(singleScene(anchor));
       continue;
     }
     let videos = anchor.kind === 'video' ? 1 : 0;
     const eligible = [anchor];
-    for (const item of remaining.slice(1, 6)) {
+    const eligibleIndices = [cursor];
+    let inspected = 0;
+    for (let index = cursor + 1; index < media.length && inspected < 5; index += 1) {
+      if (used.has(index)) continue;
+      inspected += 1;
+      const item = media[index];
       const itemRatio = ratio(item);
       if (itemRatio === null || (mode === 'columns' && itemRatio >= 1)) continue;
       if (item.kind === 'video' && videos > 0) continue;
       eligible.push(item);
+      eligibleIndices.push(index);
       if (item.kind === 'video') videos += 1;
       if (eligible.length === (mode === 'columns' ? 3 : 4)) break;
     }
@@ -122,26 +183,14 @@ export function buildScenes(
     let bestCost = Infinity;
     for (let count = 2; count <= eligible.length; count += 1) {
       const items = eligible.slice(0, count);
-      const templates = mode === 'columns' ? TEMPLATES[count].slice(0, 1) : TEMPLATES[count];
-      for (const rectangles of templates) {
-        // Basic centered fit: choose the least aspect-ratio mismatch, no subject detection.
-        const cost =
-          rectangles.reduce(
-            (sum, [, , width, height], index) =>
-              sum + Math.abs(Math.log((screenRatio * width) / height / ratio(items[index])!)),
-            0,
-          ) / count;
-        if (cost < bestCost) {
-          bestCost = cost;
-          best = makeScene(items, rectangles);
-        }
+      const { rectangles, cost } = chooseLayout(items, mode, screenRatio);
+      if (cost < bestCost - 1e-9) {
+        bestCost = cost;
+        best = makeScene(items, rectangles, mode, screenRatio);
       }
     }
     scenes.push(best);
-    const used = new Set(best.cells.map((cell) => cell.item));
-    for (let index = Math.min(5, remaining.length - 1); index >= 0; index -= 1) {
-      if (used.has(remaining[index])) remaining.splice(index, 1);
-    }
+    eligibleIndices.slice(1, best.cells.length).forEach((index) => used.add(index));
   }
   return scenes;
 }

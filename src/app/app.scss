@@ -50,6 +50,14 @@ select {
   background: #000;
 }
 
+.scene-cell--collage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 0.5px solid rgba(255, 255, 255, 0.6);
+  pointer-events: none;
+}
+
 .stage--stable {
   z-index: 1;
   opacity: 1;
@@ -88,7 +96,7 @@ select {
   min-width: 0;
   min-height: 0;
   object-fit: contain;
-  background: #000;
+  background: transparent;
   -webkit-user-drag: none;
 }
 

@@ -399,6 +399,27 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('si falla el video al preparar el collage, las fotos supervivientes siguen su temporizador', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns', photoDurationSeconds: 3 },
+      media: [photo, video, secondPhoto, thirdPhoto].map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    fixture.detectChanges();
+    (fixture.nativeElement as HTMLElement).querySelector('.stage--staging video')!.dispatchEvent(new Event('error'));
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const component = fixture.componentInstance as any;
+    expect(component.currentMedia().kind).toBe('photo');
+    expect(component.currentScene().cells).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(3000);
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).querySelector('.stage--staging')).not.toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('avanza la escena completa al finalizar su video, sin tiempo adicional', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
@@ -416,6 +437,66 @@ describe('App', () => {
     fixture.detectChanges();
     expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(2);
     expect(compiled.querySelector('video')).toBeNull();
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('una paleta nueva no reinicia el video ni cambia la escena durante reposo', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns', collageBackground: 'material' },
+      media: [photo, video, secondPhoto, thirdPhoto].map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const component = fixture.componentInstance as any;
+    const element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
+    Object.defineProperties(element, { paused: { configurable: true, value: false }, currentTime: { configurable: true, value: 4, writable: true } });
+    element.dispatchEvent(new Event('playing'));
+    const key = component.currentScene().key;
+    const generation = component.navigationGeneration;
+    const withColors = { ...servedManifest, version: 2,
+      media: servedManifest.media.map((item) => ({ ...item, bandColors: ['#112233', '#445566'] })) };
+    component.receiveManifest(withColors);
+    fixture.detectChanges();
+    expect((fixture.nativeElement as HTMLElement).querySelector('video')).toBe(element);
+    expect(element.currentTime).toBe(4);
+    expect(component.currentScene().key).toBe(key);
+    expect(component.navigationGeneration).toBe(generation);
+    component.applyReposeState({ ...awakeRepose, active: true });
+    component.receiveManifest({ ...withColors, version: 3 });
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(component.currentScene().key).toBe(key);
+    component.applyReposeState(awakeRepose);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(component.currentScene().key).toBe(key);
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
+  it('paletas durante preparación/crossfade no cancelan ni duplican el avance', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' },
+      media: [photo, secondPhoto, thirdPhoto, { ...photo, id: 'fourth', url: '/fourth' }]
+        .map((entry) => ({ ...entry, width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedSceneReady(fixture);
+    const component = fixture.componentInstance as any;
+    await vi.advanceTimersByTimeAsync(30_000);
+    fixture.detectChanges();
+    const generation = component.navigationGeneration;
+    component.receiveManifest({ ...servedManifest, version: 2,
+      media: servedManifest.media.map((item) => ({ ...item, bandColors: ['#112233', '#445566'] })) });
+    expect(component.navigationGeneration).toBe(generation);
+    await makeStagedSceneReady(fixture);
+    component.receiveManifest({ ...servedManifest, version: 3,
+      media: servedManifest.media.map((item) => ({ ...item, bandColors: ['#112233', '#445566'] })) });
+    expect(component.navigationGeneration).toBe(generation);
+    await vi.advanceTimersByTimeAsync(450);
+    expect(component.currentScene().cells[0].item.id).toBe(thirdPhoto.id);
+    expect(component.pendingManifest().version).toBe(3);
     fixture.destroy();
     vi.useRealTimers();
   });

@@ -3,7 +3,7 @@ import { DisplayOrder, FrameManifest, MediaItem } from './models';
 export function orderManifestMedia(
   media: MediaItem[],
   order: DisplayOrder,
-  version: number,
+  _version: number,
 ): MediaItem[] {
   const result = [...media];
   const timestamp = (item: MediaItem) => {
@@ -15,7 +15,7 @@ export function orderManifestMedia(
   }
   if (order === 'shuffle') {
     return result.sort(
-      (left, right) => stableRank(left.id, version) - stableRank(right.id, version),
+      (left, right) => stableRank(left.id, 0) - stableRank(right.id, 0) || left.id.localeCompare(right.id),
     );
   }
   return result.sort((left, right) => timestamp(right) - timestamp(left));

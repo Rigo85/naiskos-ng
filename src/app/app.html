@@ -17,7 +17,7 @@
         <strong>{{ displayTime() }}</strong>
         <span class="repose-clock__date">{{ reposeDate() }}</span>
         <span class="repose-clock__weather" [title]="weatherDescription()">
-          <span aria-hidden="true">{{ reposeWeatherIcon() }}</span>
+          <app-weather-icon [kind]="reposeWeatherIcon()" />
           <span>{{ reposeTemperature() }}</span>
           <small>{{ weatherDescription() }}</small>
         </span>
@@ -257,8 +257,10 @@
           <span>{{ displayDate() }}</span>
         }
         @if (settings().showWeather) {
-          <span [title]="weatherDescription()">
-            {{ weatherIcon() }} {{ displayTemperature() }}
+          <span class="corner-widgets__weather" [title]="weatherDescription()"
+            [attr.aria-label]="weatherDescription() + ', ' + displayTemperature()">
+            <app-weather-icon [kind]="weatherIcon()" />
+            <span>{{ displayTemperature() }}</span>
           </span>
         }
       </div>

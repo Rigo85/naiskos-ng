@@ -1426,6 +1426,38 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it('muestra lluvia vectorial en visor y reposo, conservando temperatura y estados sin conexión', async () => {
+    vi.useFakeTimers();
+    const fixture = TestBed.createComponent(App);
+    const component = fixture.componentInstance as any;
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture);
+    component.weather.set({ ...weather, current: { ...weather.current!, weatherCode: 63, temperatureC: 23 } });
+    fixture.detectChanges();
+    const compiled = fixture.nativeElement as HTMLElement;
+    const corner = () => compiled.querySelector('.corner-widgets__weather')!;
+    expect(corner().querySelectorAll('svg path')).toHaveLength(2);
+    expect(corner().getAttribute('aria-label')).toBe('Lluvia, 23°');
+    expect(corner().textContent).toContain('23°');
+    expect(corner().textContent).not.toContain('🌧');
+    const rainPaths = corner().querySelector('svg')!.innerHTML;
+    component.applyReposeState({ ...awakeRepose, active: true, updatedAt: '2026-09-28T12:00:00Z' });
+    fixture.detectChanges();
+    expect(compiled.querySelector('.repose-clock__weather svg')!.innerHTML).toBe(rainPaths);
+    expect(compiled.querySelector('.repose-clock__weather')!.textContent).toContain('Lluvia');
+    component.weather.set({ ...component.weather(), status: 'stale' });
+    fixture.detectChanges();
+    expect(corner().querySelector('svg')!.innerHTML).not.toBe(rainPaths);
+    expect(compiled.querySelector('.repose-clock__weather svg')!.innerHTML).toBe(rainPaths);
+    component.weather.set({ ...component.weather(), current: null, status: 'unavailable' });
+    fixture.detectChanges();
+    expect(compiled.querySelector('.repose-clock__weather svg')!.innerHTML).toBe(corner().querySelector('svg')!.innerHTML);
+    expect(compiled.querySelector('.repose-clock__weather')!.textContent).toContain('--°');
+    fixture.destroy();
+    vi.useRealTimers();
+  });
+
   it('organiza la configuración y muestra el clima entregado por el agente', async () => {
     vi.useFakeTimers();
     const fixture = TestBed.createComponent(App);

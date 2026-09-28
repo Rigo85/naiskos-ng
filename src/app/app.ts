@@ -1,4 +1,6 @@
 import { collageBackground, samePlaybackContent } from './core/collage-background';
+import { iconForWeatherCode } from './core/weather-icons';
+import { WeatherIcon } from './weather-icon';
 import {
   Component,
   afterNextRender,
@@ -192,7 +194,7 @@ const REPOSE_MENU_TIMEOUT_MS = 15_000;
 
 @Component({
   selector: 'app-root',
-  imports: [],
+  imports: [WeatherIcon],
   templateUrl: './app.html',
   styleUrl: './app.scss',
 })
@@ -407,11 +409,11 @@ export class App implements OnDestroy {
   });
   protected readonly reposeWeatherIcon = computed(() => {
     const current = this.weather().current;
-    return current ? iconForWeatherCode(current.weatherCode, current.isDay) : '◌';
+    return current ? iconForWeatherCode(current.weatherCode, current.isDay) : 'pending';
   });
   protected readonly weatherIcon = computed(() => {
     const current = this.weather().current;
-    if (!current || this.weather().status !== 'ready') return '◌';
+    if (!current || this.weather().status !== 'ready') return 'pending';
     return iconForWeatherCode(current.weatherCode, current.isDay);
   });
   protected readonly weatherDescription = computed(() => {
@@ -3094,16 +3096,6 @@ export class App implements OnDestroy {
     return collageBackground(item, this.collageEnabled() &&
       (this.settings().collageBackground ?? DEFAULT_FRAME_SETTINGS.collageBackground) === 'material');
   }
-}
-
-function iconForWeatherCode(code: number, isDay: boolean): string {
-  if (code === 0) return isDay ? '☀' : '☾';
-  if (code <= 2) return isDay ? '⛅' : '☁';
-  if (code === 3 || code === 45 || code === 48) return '☁';
-  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return '🌧';
-  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return '❄';
-  if (code >= 95) return '⛈';
-  return '◌';
 }
 
 function descriptionForWeatherCode(code: number): string {

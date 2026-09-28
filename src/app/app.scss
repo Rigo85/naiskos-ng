@@ -464,6 +464,12 @@ select {
   font-weight: 500;
 }
 
+.corner-widgets__weather {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
 .overlay-backdrop,
 .workspace-overlay {
   position: absolute;

@@ -103,7 +103,7 @@
           (seeking)="onVideoSeeking(videoElement, item.id)"
           (seeked)="onVideoSeeked(videoElement, item.id)"
           (error)="onVideoError(videoElement, item.id, item.sha256)"
-          (ended)="onVideoEnded(item.id)"
+          (ended)="onVideoEnded(videoElement, item.id)"
         ></video>
 
       }

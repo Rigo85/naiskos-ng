@@ -15,12 +15,17 @@ En **Configuración → Presentación** se puede elegir:
 La biblioteca se agrupa después de aplicar el orden configurado. El siguiente
 material pendiente inicia cada escena y se buscan acompañantes entre los seis
 primeros pendientes. Los no elegidos conservan su prioridad. Cada elemento se
-usa una vez por vuelta. La agrupación permanece estable hasta que cambia la
-biblioteca o la configuración; no se sortea nuevamente en cada transición.
-El sorteo de escenas individuales del adaptable usa una semilla por sesión del
-visor: no cambia por reposo, colores ni versión del manifiesto. Reiniciar el visor
-puede cambiar qué elementos se presentan solos. No modifica el orden configurado,
-no duplica elementos ni cambia la agrupación de **Columnas verticales**.
+usa una vez por vuelta normal. Desde la versión de mosaicos dinámicos la siguiente
+mezcla se calcula anticipadamente y se adopta al completar el recorrido, no por
+un temporizador ni por cada transición. Ambos modos renuevan sus acompañantes;
+sólo el adaptable sortea además escenas individuales.
+
+En orden **aleatorio** se baraja de nuevo al cambiar de vuelta. En **más/menos
+reciente** se conserva la prioridad del primer pendiente y se varían acompañantes
+dentro de la misma ventana de seis. Se comparan la selección original y una
+alternativa sembrada, aceptando hasta 0,025 adicionales del coste geométrico del
+mejor candidato; no se busca una combinación arbitraria en toda la biblioteca.
+Una biblioteca pequeña o poco compatible puede repetir distribuciones.
 
 ## Distribuciones y bandas
 
@@ -41,9 +46,8 @@ celdas**. Columnas verticales conserva su agrupación sin filas; sólo el adapta
 añade el sorteo de escenas individuales. Las escenas de una sola celda no llevan
 divisores y mantienen las mismas reglas de duración y reproducción.
 
-El orden aleatorio es estable por identidad, no por versión de manifiesto. Al
-migrar desde la versión inicial puede cambiar una vez; después, añadir colores,
-miniaturas u otros metadatos no vuelve a sortear la biblioteca. Una publicación
+Dentro de una vuelta, añadir colores, miniaturas u otros metadatos no vuelve a
+sortear la biblioteca. Una publicación
 exclusivamente decorativa conserva la escena, preparación, temporizadores y
 reproducción actuales; sus colores entran en una transición natural. Cambiar el
 fondo o el volumen no vuelve a ejecutar la búsqueda de distribuciones.
@@ -70,8 +74,8 @@ bandas se conserva la distribución inicial. Son constantes internas, no nuevas
 opciones. No hay reconocimiento de sujetos: el área recortada no mide la
 importancia de lo que aparece junto a los bordes.
 
-El cálculo se hace sólo para la escena que va a prepararse, no para toda la
-biblioteca al arrancar. Dos pasadas acotadas retienen un único resultado; una
+El ajuste fino se hace en un Web Worker para una ventana de hasta cinco escenas,
+no para toda la biblioteca. Dos pasadas acotadas retienen un único resultado; una
 caché de hasta 64 geometrías reutiliza proporciones, sin guardar imágenes ni
 referencias a medios. Una escena ya ajustada no vuelve a ajustarse al pasar
 por reposo o reintentos. Si falla un material, se recompone el grupo restante
@@ -127,3 +131,74 @@ No se requiere una biblioteca nueva ni generar collages como archivos de imagen.
 
 La aceptación visual de cada nueva versión se realiza sobre el dispositivo.
 Instalar mediante el mecanismo normal de releases firmadas.
+
+## Renovación anticipada y recuperación
+
+- Un único worker recibe metadatos mínimos, sin URLs, nombres, leyendas ni píxeles.
+  Calcula la próxima vuelta tras una escena estable. Mantiene un plan activo y
+  uno preparado, no un historial ilimitado de planes.
+- La preparación tiene un límite de 15 segundos, cancela realmente el worker y
+  reintenta con espera creciente de 5–60 segundos. Un salto que necesita ajuste
+  fino tiene un límite de 2 segundos; si el worker está ocupado/no disponible se
+  usa la plantilla base, respetando el encuadre. No se fuerza el optimizador en
+  el hilo de la interfaz.
+- Cerca del cambio (cinco segundos antes del temporizador o del final del video)
+  se intenta cargar/decodificar la siguiente escena usando el segundo escenario
+  existente. El actual sigue reproduciéndose. No hay tercer escenario ni tercer
+  decodificador de video. La precarga no se anuncia al watchdog como una transición.
+- Un plan listo no significa que sus archivos estén listos. Sólo el commit de una
+  escena cargada, tras el crossfade, adopta la nueva vuelta y marca **todos** sus
+  miembros como vistos. Cancelaciones, fallos y precargas no suman progreso.
+- Al terminar, si no existe un plan válido, se repite el disponible durante una
+  vuelta completa y se registra el fallback. Un resultado tardío nunca sustituye
+  la mezcla a mitad de esa vuelta. No se espera al worker con la pantalla detenida.
+- El final depende de una cohorte finita: los IDs existentes al comenzar la
+  vuelta, menos los eliminados. Nuevas entradas pueden mostrarse, pero no amplían
+  esa condición de cierre. Un hash nuevo deja de contar como visto; los medios
+  temporalmente en cuarentena no impiden cerrar la vuelta.
+- La galería continúa desde lo seleccionado; los elementos saltados siguen
+  pendientes. Atrás/adelante recorre hasta 64 escenas realmente mostradas y puede
+  repetirlas por petición del usuario. Ese historial es sólo de sesión.
+- Se guardan semilla, variante del algoritmo, cohorte y vistos en un checkpoint
+  local de metadatos (máximo 2 MB, 20.000 identidades por lista al restaurar).
+  Se valida contra el marco, modo, orden y contenido actual. Un checkpoint corrupto
+  se descarta sin impedir reproducción. No es caché de imágenes ni copia central.
+- Cambiar contenido, hash, dimensiones, encuadre, modo, orden o aspecto invalida
+  planes incompatibles. Volumen, clima, leyendas y colores no vuelven a mezclarlos.
+- Reposo cancela cálculo inconcluso y precarga; conserva el plan ya terminado,
+  progreso y escena visible. Al salir continúa con las reglas vigentes de video.
+  No utiliza el tiempo dormido como avance de biblioteca.
+- Los resultados se correlacionan por generación de planificación y operación
+  de navegación. Los de un worker terminado o una preparación cancelada se ignoran.
+
+## Trazas y pruebas
+
+`viewer.collage` distingue `plan-requested`, `plan-ready`, `lookahead-ready`,
+`preload-ready`, `preload-used`, `round-adopted`, `scene-committed`, selecciones
+manuales, historial, cancelaciones, reposo, checkpoint y fallbacks. Cada evento
+tiene UUID, sesión, build, hora y secuencia. Las decisiones de planificación
+añaden vuelta, semilla, huella de entradas, versión, cantidades y duración;
+los commits incluyen IDs de todos los medios, nunca leyendas ni remitentes.
+
+El visor conserva hasta 128 eventos no confirmados y reintenta con el mismo UUID.
+El agente confirma después de escribir su outbox y registra en su log estructurado;
+el central los almacena idempotentemente en `device_events`. No se generan
+notificaciones al usuario por cada traza. El detalle de entrega, límites y consultas
+está en `naiskos-agent/docs/collage-events.md`.
+
+Pruebas repetibles:
+
+```bash
+npm test -- --watch=false
+npm run build
+npm run test:collage-browser
+```
+
+La última requiere Node 24, FFmpeg y Chromium/Chrome (`CHROME_BIN` opcional). Usa perfil
+temporal, agente sintético por loopback y el bundle de producción: varias vueltas
+con fotos y un MP4 generado en memoria, precarga real, reposo, recuperación de HTTP
+404 y benchmark de 2.300 elementos en
+el worker. No conecta al marco ni a la central. Las pruebas unitarias cubren además
+galería, historial, actualización de biblioteca, fallos, callbacks tardíos,
+timeouts, checkpoint, límites de selección y entrega de trazas. Las mediciones
+de escritorio no acreditan por sí solas el rendimiento de la Raspberry.

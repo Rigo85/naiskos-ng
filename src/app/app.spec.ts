@@ -1,9 +1,11 @@
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { NEVER, of } from 'rxjs';
 import { vi } from 'vitest';
 
 import { App } from './app';
 import { AgentApi } from './core/agent-api';
+import { CollagePlannerClient } from './core/collage-planner-client';
+import { executePlannerJob } from './core/collage-planner';
 import {
   DEFAULT_FRAME_SETTINGS,
   FrameManifest,
@@ -108,6 +110,7 @@ const markAllNotificationsReadMock = vi.fn(() => of({ updated: 1 }));
 const dismissNotificationMock = vi.fn(() => of(undefined));
 const reportPlaybackEventMock = vi.fn(() => of({ accepted: true }));
 const reportMediaPreparationFailureMock = vi.fn(() => of({ accepted: true }));
+const reportCollageEventMock = vi.fn((_event: unknown) => of({ accepted: true }));
 const awakeRepose: ReposeState = {
   schemaVersion: 1,
   active: false,
@@ -199,6 +202,7 @@ const agentApiMock = {
   reportViewerHeartbeat: () => of(undefined),
   reportPlaybackEvent: reportPlaybackEventMock,
   reportMediaPreparationFailure: reportMediaPreparationFailureMock,
+  reportCollageEvent: reportCollageEventMock,
 };
 
 function dispatchPointer(
@@ -260,6 +264,7 @@ async function makeStagedMediaReady(
 }
 
 async function makeStagedSceneReady(fixture: ReturnType<typeof TestBed.createComponent<App>>): Promise<void> {
+  await vi.advanceTimersByTimeAsync(0);
   fixture.detectChanges();
   const compiled = fixture.nativeElement as HTMLElement;
   for (const image of compiled.querySelectorAll<HTMLImageElement>('.stage--staging img')) {
@@ -299,6 +304,10 @@ describe('App', () => {
     dismissNotificationMock.mockClear();
     reportPlaybackEventMock.mockClear();
     reportMediaPreparationFailureMock.mockClear();
+    reportCollageEventMock.mockClear();
+    vi.spyOn(CollagePlannerClient.prototype, 'run').mockImplementation(async (job) => ({
+      scenes: executePlannerJob(job), elapsedMs: 1,
+    }));
     vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
     vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
     await TestBed.configureTestingModule({
@@ -312,6 +321,147 @@ describe('App', () => {
     fixture.detectChanges();
     expect(fixture.componentInstance).toBeTruthy();
     fixture.destroy();
+  });
+
+  it('una petición de trazas sin respuesta vence y se reintenta sin detener el visor', async () => {
+    vi.useFakeTimers(); reportCollageEventMock.mockImplementationOnce(() => NEVER);
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedMediaReady(fixture);
+    const first = reportCollageEventMock.mock.calls[0][0] as any;
+    await vi.advanceTimersByTimeAsync(6_000); fixture.detectChanges();
+    expect(reportCollageEventMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect((reportCollageEventMock.mock.calls[1][0] as any).id).toBe(first.id);
+    expect((fixture.componentInstance as any).currentMedia().id).toBe(photo.id);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  function dynamicManifest(): FrameManifest {
+    return { ...manifest, settings: { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns', order: 'newest' },
+      media: Array.from({ length: 18 }, (_, i) => ({ ...photo, id: `dynamic-${i}`, sha256: `sha-${i}`,
+        url: `/dynamic/${i}.jpg`, width: 670, height: 1000 })) };
+  }
+
+  it('prepara y precarga antes del cambio sin detener el reloj ni marcar la vuelta como adoptada', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    const first = c.currentScene().key;
+    await vi.advanceTimersByTimeAsync(25_000); await makeStagedSceneReady(fixture);
+    expect(c.currentScene().key).toBe(first);
+    expect(c.viewerNavigationSnapshot().phase).toBe('stable');
+    expect(c.preparingTransition()).toBe(false);
+    const staged = fixture.nativeElement.querySelector('.stage--staging img');
+    expect(staged).toBeTruthy();
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'plan-ready')).toBe(true);
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'round-adopted')).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000); fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.stage--incoming img')).toBe(staged);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentScene().key).not.toBe(first);
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'preload-used')).toBe(true);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('galería y reposo cancelan la precarga sin contarla ni adoptar una mezcla pendiente', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    const first = c.currentScene().key;
+    await vi.advanceTimersByTimeAsync(25_000); await makeStagedSceneReady(fixture);
+    c.openOverlay('gallery'); fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.stage--staging')).toBeNull();
+    expect(c.currentScene().key).toBe(first);
+    c.showGalleryItem(servedManifest.media[15].id);
+    await makeStagedSceneReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentScene().cells.some((cell: any) => cell.item.id === 'dynamic-15')).toBe(true);
+    const selected = c.currentScene().key;
+    await vi.advanceTimersByTimeAsync(25_000); await makeStagedSceneReady(fixture);
+    servedRepose = { ...awakeRepose, active: true, source: 'manual' };
+    c.applyReposeState(servedRepose); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(60_000); fixture.detectChanges();
+    expect(c.currentScene().key).toBe(selected);
+    expect(fixture.nativeElement.querySelector('.stage--staging')).toBeNull();
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'round-adopted')).toBe(false);
+    servedRepose = awakeRepose; c.applyReposeState(awakeRepose);
+    await vi.advanceTimersByTimeAsync(0); fixture.detectChanges();
+    expect(c.currentScene().key).toBe(selected);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('un error de precarga no congela el visor y se descarta el resultado tardío de la imagen fallida', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any; const first = c.currentScene().key;
+    await vi.advanceTimersByTimeAsync(25_000); fixture.detectChanges();
+    const broken = fixture.nativeElement.querySelector('.stage--staging img') as HTMLImageElement;
+    expect(broken).toBeTruthy(); broken.dispatchEvent(new Event('error'));
+    await vi.advanceTimersByTimeAsync(0); fixture.detectChanges();
+    expect(c.currentScene().key).toBe(first); expect(c.preparingTransition()).toBe(false);
+    broken.dispatchEvent(new Event('load'));
+    await vi.advanceTimersByTimeAsync(5_000); await makeStagedSceneReady(fixture);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentScene().key).not.toBe(first);
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'preload-failed')).toBe(true);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('invalida una precarga que falla después de haber confirmado loaded/decode', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    await vi.advanceTimersByTimeAsync(25_000); await makeStagedSceneReady(fixture);
+    expect(c.collagePreload.ready).toBe(true);
+    const first = c.currentScene().key;
+    fixture.nativeElement.querySelector('.stage--staging img').dispatchEvent(new Event('error'));
+    fixture.detectChanges();
+    expect(c.collagePreload).toBeNull(); expect(c.currentScene().key).toBe(first);
+    await vi.advanceTimersByTimeAsync(5_000); await makeStagedSceneReady(fixture);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentScene().key).not.toBe(first);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('adopta nuevas vueltas en commits completos sin repetir compañeros durante el recorrido normal', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    for (let i = 0; i < 18; i++) {
+      c.navigate(1); await makeStagedSceneReady(fixture);
+      await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+      expect(c.preparingTransition()).toBe(false);
+    }
+    const events = reportCollageEventMock.mock.calls.map(([e]) => e as any);
+    const adopted = events.filter((e) => e.action === 'round-adopted');
+    expect(adopted.length).toBeGreaterThanOrEqual(2);
+    expect(adopted.every((e) => !e.details.fallback)).toBe(true);
+    const firstRound = events.filter((e) => e.action === 'scene-committed' && e.details.round === 1)
+      .flatMap((e) => e.details.mediaIds);
+    expect(firstRound).toHaveLength(18); expect(new Set(firstRound).size).toBe(18);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('ignora ended/pause tardíos de la instancia anterior al repetir un video en otra vuelta', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...dynamicManifest(), media: [{ ...video, width: 670, height: 1000 }] };
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    const previous = fixture.nativeElement.querySelector('video');
+    previous.dispatchEvent(new Event('ended'));
+    await makeStagedSceneReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    const current = fixture.nativeElement.querySelector('video');
+    expect(current).not.toBe(previous);
+    c.onVideoEnded(previous, video.id); c.onVideoPause(previous, video.id);
+    c.onVideoProgress(previous, video.id);
+    await vi.advanceTimersByTimeAsync(0); fixture.detectChanges();
+    expect(c.preparingTransition()).toBe(false); expect(c.videoPaused()).toBe(false);
+    expect(fixture.nativeElement.querySelector('video')).toBe(current);
+    fixture.destroy(); vi.useRealTimers();
   });
 
   it.each(['columns', 'adaptive'] as const)('comparte fondos y bordes en %s sin trasladarlos al modo individual', async (collageMode) => {
@@ -486,6 +636,7 @@ describe('App', () => {
     await makeStagedSceneReady(fixture);
     const compiled = fixture.nativeElement as HTMLElement;
     compiled.querySelector('video')!.dispatchEvent(new Event('ended'));
+    await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
     expect(compiled.querySelectorAll('.stage--staging img')).toHaveLength(2);
     await makeStagedSceneReady(fixture);
@@ -568,6 +719,7 @@ describe('App', () => {
     component.openSettings();
     component.settingsDraft = { ...DEFAULT_FRAME_SETTINGS, collageMode: 'columns' };
     component.saveSettings();
+    await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(1);
@@ -676,6 +828,7 @@ describe('App', () => {
     expect(compiled.querySelector('.stage--staging')).toBeNull();
     dispatchPointer(frame, 'pointerdown', 1000, 400);
     dispatchPointer(frame, 'pointerup', 1000, 400);
+    await vi.advanceTimersByTimeAsync(0);
     fixture.detectChanges();
     expect(compiled.querySelector('.stage--staging')).not.toBeNull();
     fixture.destroy();

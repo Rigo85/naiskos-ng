@@ -17,6 +17,7 @@ import {
   ViewerMediaPreparationFailure,
   ReposeState,
 } from './models';
+import { CollageTraceEvent } from './collage-trace';
 
 export type SystemAction = 'exit' | 'poweroff';
 
@@ -141,6 +142,12 @@ export class AgentApi {
 
   reportPlaybackEvent(event: ViewerPlaybackEvent): Observable<{ accepted: boolean }> {
     return this.http.post<{ accepted: boolean }>(`${this.baseUrl}/viewer/playback-events`, event, {
+      headers: { 'X-Naiskos-Request': 'viewer' },
+    });
+  }
+
+  reportCollageEvent(event: CollageTraceEvent): Observable<{ accepted: boolean }> {
+    return this.http.post<{ accepted: boolean }>(`${this.baseUrl}/viewer/collage-events`, event, {
       headers: { 'X-Naiskos-Request': 'viewer' },
     });
   }

@@ -22,6 +22,8 @@ export interface MediaScene {
 
 export interface SceneCandidate extends NavigationCandidate {
   scene: MediaScene;
+  cycle?: { round: number; seed: number; fingerprint: string; fallback?: boolean };
+  historyIndex?: number;
 }
 
 type Rectangle = [number, number, number, number];
@@ -181,6 +183,7 @@ export function buildScenes(
   mode: CollageMode = 'off',
   aspect = 1.6,
   adaptiveMixSeed = 0,
+  groupingSeed?: number,
 ): MediaScene[] {
   if (mode === 'off') return media.map(singleScene);
   const used = new Set<number>();
@@ -209,22 +212,46 @@ export function buildScenes(
       eligible.push(item);
       eligibleIndices.push(index);
       if (item.kind === 'video') videos += 1;
-      if (eligible.length === (mode === 'columns' ? 3 : 4)) break;
+      if (groupingSeed === undefined && eligible.length === (mode === 'columns' ? 3 : 4)) break;
     }
     let best = singleScene(anchor);
     let bestCost = Infinity;
-    for (let count = 2; count <= eligible.length; count += 1) {
-      const items = eligible.slice(0, count);
+    // Keep the original choice as a quality reference; diversify only within
+    // the same six-item window. Never randomize chronological library order.
+    const choices: Array<{ items: MediaItem[]; rectangles: Rectangle[]; cost: number }> = [];
+    const alternatives = [eligible];
+    if (groupingSeed !== undefined) alternatives.push([anchor, ...eligible.slice(1).sort((a, b) =>
+      collageRank(a.id, groupingSeed) - collageRank(b.id, groupingSeed) || a.id.localeCompare(b.id))]);
+    for (const alternative of alternatives) for (let count = 2; count <= Math.min(alternative.length, mode === 'columns' ? 3 : 4); count += 1) {
+      const items = alternative.slice(0, count);
       const { rectangles, cost } = chooseLayout(items, mode, screenRatio);
+      choices.push({ items, rectangles, cost });
       if (cost < bestCost - 1e-9) {
         bestCost = cost;
         best = makeScene(items, rectangles, mode, screenRatio);
       }
     }
+    if (groupingSeed !== undefined && choices.length) {
+      const acceptable = choices.filter((choice) => choice.cost <= bestCost + .025);
+      acceptable.sort((a, b) => collageRank(a.items.map((i) => i.id).join('|'), groupingSeed) -
+        collageRank(b.items.map((i) => i.id).join('|'), groupingSeed));
+      const choice = acceptable[0];
+      best = makeScene(choice.items, choice.rectangles, mode, screenRatio);
+    }
     scenes.push(best);
-    eligibleIndices.slice(1, best.cells.length).forEach((index) => used.add(index));
+    const selected = new Set(best.cells.slice(1).map((c) => c.item.id));
+    eligibleIndices.slice(1).forEach((index) => { if (selected.has(media[index].id)) used.add(index); });
   }
   return scenes;
+}
+
+export function collageRank(id: string, seed: number): number {
+  let hash = (2166136261 ^ seed) >>> 0;
+  for (const char of id) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  return hash >>> 0;
 }
 
 /** Adapt navigation without replacing the actual manifest or hiding items from the gallery. */

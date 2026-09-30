@@ -36,6 +36,8 @@ sistema lista para instalar ni como un producto comercial.
 ## Funciones principales
 
 - Presentación automática de fotografías y reproducción completa de videos.
+- [Mosaicos dinámicos](docs/collage.md) en columnas o adaptables, con mezcla
+  anticipada por vuelta, un video como máximo por escena y trazas de funcionamiento.
 - Crossfade y encuadre global o individual con `contain`, `cover` e `inherit`.
 - Navegación táctil por tap, doble tap, arrastre y deslizamiento horizontal.
 - Zoom fotográfico volátil de 1× a 4× mediante pellizco y desplazamiento.
@@ -59,8 +61,9 @@ flowchart LR
 ```
 
 El navegador nunca se conecta directamente a Telegram ni al servicio central.
-Tampoco usa la caché del navegador como repositorio multimedia: todo el estado
-operativo y los archivos pertenecen al agente local.
+Tampoco usa la caché del navegador como repositorio multimedia: los archivos y
+preferencias pertenecen al agente local. El visor conserva pequeños checkpoints
+de reproducción y una cola acotada de diagnósticos en su almacenamiento local.
 
 ## Repositorios
 

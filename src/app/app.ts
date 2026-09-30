@@ -15,7 +15,10 @@ import {
   signal,
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
-import { Subscription, catchError, of, switchMap, timer } from 'rxjs';
+import { Subscription, catchError, firstValueFrom, of, switchMap, timer, timeout } from 'rxjs';
+import { CollageCycle } from './core/collage-cycle';
+import { CollagePlannerClient } from './core/collage-planner-client';
+import { CollageTrace, collageStorage } from './core/collage-trace';
 
 import { AgentApi, SystemAction } from './core/agent-api';
 import { VIEWER_BUILD_ID } from './core/build-info';
@@ -264,6 +267,11 @@ export class App implements OnDestroy {
   private readonly runtimeQuiesced = signal(false);
   private readonly runtimeRendered = signal(false);
   private readonly runtimeSessionId = crypto.randomUUID();
+  private readonly collageTrace = new CollageTrace(
+    (event) => firstValueFrom(this.agent.reportCollageEvent(event).pipe(timeout(5_000))),
+    this.runtimeSessionId, VIEWER_BUILD_ID, collageStorage());
+  private readonly collageCycle = new CollageCycle(new CollagePlannerClient(),
+    (action, details) => this.collageTrace.emit(action, details), collageStorage());
   private quiescedFor: string | null = null;
   protected readonly reposeActive = computed(() => this.runtimeQuiesced() || (this.repose()?.active ?? true));
   protected readonly reposeMenuVisible = signal(false);
@@ -278,7 +286,7 @@ export class App implements OnDestroy {
   );
   protected readonly media = computed(() => this.manifest()?.media ?? []);
   private readonly sceneCache = new WeakMap<FrameManifest, MediaScene[]>();
-  // Choose once per viewer session, never on resume, preference changes or sync.
+  // Initial round seed; CollageCycle owns subsequent seeds and restart checkpoints.
   private readonly adaptiveMixSeed = Math.floor(Math.random() * 0x1_0000_0000);
   private readonly committedScene = signal<MediaScene | null>(null);
   protected readonly collageEnabled = computed(() => (this.settings().collageMode ?? 'off') !== 'off');
@@ -513,6 +521,9 @@ export class App implements OnDestroy {
   private readonly quarantinedVideos = new Map<string, number>();
   private readonly unavailableMedia = new MediaFailureRegistry(MEDIA_QUARANTINE_MS);
   private navigationGeneration = 0;
+  private collagePreload: { target: SceneCandidate | null; ready: boolean } | null = null;
+  private collagePreloadTimer: number | undefined;
+  private collagePreloadAttemptKey: string | null = null;
   private stagingAttempt: StagingAttempt | null = null;
   private sceneRefreshId: string | undefined;
   private navigationFailures = 0;
@@ -533,6 +544,7 @@ export class App implements OnDestroy {
 
   constructor() {
     afterNextRender(() => this.runtimeRendered.set(true));
+    this.subscriptions.add(timer(3_000, 3_000).subscribe(() => this.warmCollage()));
     this.subscriptions.add(timer(0, 1_000).pipe(
       switchMap(() => this.agent.getRuntimeControl().pipe(catchError(() => of(null)))),
     ).subscribe((control) => {
@@ -647,6 +659,8 @@ export class App implements OnDestroy {
 
   ngOnDestroy(): void {
     this.cancelNavigation();
+    this.collageCycle.destroy();
+    this.collageTrace.destroy();
     this.subscriptions.unsubscribe();
     this.clearPhotoTimer();
     this.clearCrossfadeTimer();
@@ -1381,6 +1395,7 @@ export class App implements OnDestroy {
   protected onVideoLoaded(video: HTMLVideoElement, mediaId: string): void {
     video.volume = this.settings().volume;
     video.muted = this.settings().muted;
+    if (video.closest('.stage--staging') || video !== this.currentVideoElement()) return;
     const checkpoint = this.playbackCheckpoint;
     const checkpointKey = checkpoint ? `${checkpoint.mediaId}:${checkpoint.mediaSha256}` : null;
     const restoresUserPause = Boolean(
@@ -1425,8 +1440,8 @@ export class App implements OnDestroy {
     this.attemptVideoPlay(video, mediaId);
   }
 
-  protected onVideoEnded(mediaId: string): void {
-    const video = this.currentVideoElement();
+  protected onVideoEnded(video: HTMLVideoElement, mediaId: string): void {
+    if (!this.isCurrentStableVideo(video, mediaId)) return;
     if (video && this.videoRecoveryAttempts > 0) {
       this.markVideoRecoverySucceeded(video, mediaId);
     } else {
@@ -1440,7 +1455,7 @@ export class App implements OnDestroy {
       video.pause();
       return;
     }
-    if (this.currentMedia()?.id === mediaId && !this.crossfade() && !this.overlayOpen()) {
+    if (this.isCurrentStableVideo(video, mediaId)) {
       this.clearPausedVideoAdvance();
       this.videoPaused.set(false);
       this.videoPlaybackState.set('playing');
@@ -1452,6 +1467,7 @@ export class App implements OnDestroy {
   }
 
   protected onVideoPause(video: HTMLVideoElement, mediaId: string): void {
+    if (video !== this.currentVideoElement() || video.closest('.stage--staging')) return;
     if (this.currentMedia()?.id !== mediaId || this.preparingTransition() || this.crossfade()) {
       return;
     }
@@ -1480,6 +1496,7 @@ export class App implements OnDestroy {
   }
 
   protected onVideoProgress(video: HTMLVideoElement, mediaId: string): void {
+    if (video !== this.currentVideoElement() || video.closest('.stage--staging')) return;
     if (this.currentMedia()?.id === mediaId && !this.crossfade()) {
       this.updateVideoProgress(video);
       this.noteVideoProgress(video);
@@ -1535,6 +1552,7 @@ export class App implements OnDestroy {
   }
 
   protected onVideoError(video: HTMLVideoElement, mediaId: string, mediaSha256: string): void {
+    if (this.failReadyCollagePreload(`${mediaId}:${mediaSha256}`)) return;
     if (this.stagingAttempt && this.staging()?.target.scene.cells.some((cell) => this.mediaIdentity(cell.item) === `${mediaId}:${mediaSha256}`)) {
       this.failStagedCell(`${mediaId}:${mediaSha256}`, `El video no se pudo preparar (código ${video.error?.code ?? 0}).`);
       return;
@@ -1913,6 +1931,7 @@ export class App implements OnDestroy {
       return;
     }
     const pendingOperation = this.galleryOperation();
+    this.cancelCollagePreload('manifest-changed');
     if (pendingOperation) {
       const operatedItem = orderedNext.media.find((item) => item.id === pendingOperation.mediaId);
       if (
@@ -2031,11 +2050,91 @@ export class App implements OnDestroy {
     const active = this.manifest();
     if (!active || !(this.pendingManifest()?.media.length || active.media.length)) return;
 
+    const preloaded = this.collagePreload;
+    const target = preloaded?.ready ? preloaded.target : null;
+    const expected = target && direction === 1 && !preferredMediaId ? this.navigationCandidates(1)[0] : null;
+    const reusable = target && expected && target.manifest === expected.manifest &&
+      target.cycle?.round === expected.cycle?.round && target.cycle?.seed === expected.cycle?.seed &&
+      target.scene.cells.length === expected.scene.cells.length && target.scene.cells.every((c, i) =>
+        this.mediaIdentity(c.item) === this.mediaIdentity(expected.scene.cells[i].item));
+    if (!reusable) this.cancelCollagePreload('navigation-changed');
+
     this.clearPhotoTimer();
     this.clearVideoMonitoring();
     this.clearPausedVideoAdvance();
     this.clearViewerPointers();
+    if (reusable && target && this.currentMedia()) {
+      this.collagePreload = null;
+      this.collageTrace.emit('preload-used', { mediaIds: target.scene.cells.map((c) => c.item.id),
+        round: target.cycle?.round ?? 0, operationId: this.navigationGeneration + 1 });
+      this.beginCrossfade(++this.navigationGeneration, this.currentMedia()!,
+        this.fitModeFor(this.currentMedia()!, active.settings), target);
+      return;
+    }
     void this.prepareAndStartCrossfade(direction, preferredMediaId);
+  }
+
+  private scheduleCollagePreload(durationMs: number): void {
+    if (this.collagePreloadTimer !== undefined) window.clearTimeout(this.collagePreloadTimer);
+    if (!this.collageEnabled()) return;
+    this.collagePreloadTimer = window.setTimeout(() => {
+      this.collagePreloadTimer = undefined;
+      void this.preloadCollage();
+    }, Math.max(0, durationMs - 5_000));
+  }
+
+  private async preloadCollage(): Promise<void> {
+    const current = this.currentScene();
+    if (!this.collageEnabled() || !current || this.overlayOpen() || this.reposeActive() ||
+      this.preparingTransition() || this.crossfade() || this.collagePreload ||
+      this.collagePreloadAttemptKey === current.key) return;
+    this.collagePreloadAttemptKey = current.key;
+    const operation = { target: null as SceneCandidate | null, ready: false };
+    this.collagePreload = operation;
+    try {
+      const next = this.navigationCandidates(1)[0];
+      if (!next || next.scene.cells.some((c) => current.cells.some((v) => v.item.id === c.item.id))) {
+        this.collagePreload = null;
+        return;
+      }
+      const target = await this.collageCycle.refine(next);
+      if (this.collagePreload !== operation) return;
+      operation.target = target;
+      await this.stageCandidate(this.navigationGeneration, current.driver,
+        this.fitModeFor(current.driver, this.settings()), target);
+      if (this.collagePreload !== operation) return;
+      operation.ready = true;
+      this.collageTrace.emit('preload-ready', { mediaIds: target.scene.cells.map((c) => c.item.id),
+        round: target.cycle?.round ?? 0, operationId: this.navigationGeneration });
+    } catch (error) {
+      if (this.collagePreload !== operation) return;
+      this.collagePreload = null;
+      if (error instanceof ScenePreparationError) {
+        this.unavailableMedia.quarantine(error.item);
+        this.reportPreparationFailure(error.item, error);
+      }
+      this.discardStagingAttempt(new NavigationCancelledError('Precarga finalizada.'));
+      this.collageTrace.emit('preload-failed', { reason: 'preparation-failed', operationId: this.navigationGeneration });
+    }
+  }
+
+  private cancelCollagePreload(reason: string): void {
+    if (this.collagePreloadTimer !== undefined) window.clearTimeout(this.collagePreloadTimer);
+    this.collagePreloadTimer = undefined;
+    if (!this.collagePreload) return;
+    this.collagePreload = null;
+    this.discardStagingAttempt(new NavigationCancelledError('Precarga cancelada.'));
+    this.collageTrace.emit('preload-cancelled', { reason, operationId: this.navigationGeneration });
+  }
+
+  private failReadyCollagePreload(mediaKey: string): boolean {
+    if (!this.collagePreload?.ready) return false;
+    const item = this.collagePreload.target?.scene.cells.find((c) => this.mediaIdentity(c.item) === mediaKey)?.item;
+    if (!item) return false;
+    this.unavailableMedia.quarantine(item);
+    this.reportPreparationFailure(item, new Error('Falló un medio ya precargado.'));
+    this.cancelCollagePreload('prepared-media-failed');
+    return true;
   }
 
   private async prepareAndStartCrossfade(
@@ -2049,14 +2148,7 @@ export class App implements OnDestroy {
     const generation = ++this.navigationGeneration;
     const outgoingFitMode = outgoing ? this.fitModeFor(outgoing, active.settings) : null;
     this.preparingTransition.set(true);
-    const candidates = sceneNavigationPlan({
-      active,
-      pending: this.pendingManifest(),
-      currentIndex: this.currentIndex(),
-      currentMediaId: outgoing?.id ?? null,
-      direction,
-      ...(preferredMediaId ? { preferredMediaId } : {}),
-    }, (manifest) => this.scenesFor(manifest));
+    const candidates = this.navigationCandidates(direction, preferredMediaId);
     const searchStartedAt = performance.now();
     this.navigationFailures = 0;
     let attempted = 0;
@@ -2064,10 +2156,13 @@ export class App implements OnDestroy {
 
     for (let position = 0; position < candidates.length; position += 1) {
       let candidate = candidates[position];
-      const available = omitSceneItems(candidate.scene, (item) =>
-        this.unavailableMedia.contains(item) || (item.kind === 'video' && this.isVideoQuarantined(item)));
+      const available = omitSceneItems(candidate.scene, (item) => this.collageUnavailable(item));
       if (!available) continue;
-      candidate = { ...candidate, scene: refineScene(available, candidate.manifest.settings.defaultFitMode), item: available.driver };
+      candidate = { ...candidate, scene: available, item: available.driver };
+      candidate = candidate.cycle || candidate.historyIndex !== undefined
+        ? await this.collageCycle.refine(candidate)
+        : { ...candidate, scene: refineScene(available, candidate.manifest.settings.defaultFitMode) };
+      if (generation !== this.navigationGeneration) return;
       if (outgoing && candidate.scene.key === this.currentScene()?.key) {
         if (candidates.length === 1) {
           if (candidate.manifest.version !== active.version) {
@@ -2085,12 +2180,7 @@ export class App implements OnDestroy {
         }
         continue;
       }
-      if (
-        this.unavailableMedia.contains(candidate.item) ||
-        (candidate.item.kind === 'video' && this.isVideoQuarantined(candidate.item))
-      ) {
-        continue;
-      }
+      if (this.collageUnavailable(candidate.item)) continue;
       if (attempted > 0 && performance.now() - searchStartedAt >= NAVIGATION_SEARCH_SLICE_MS) {
         exhausted = false;
         break;
@@ -2099,14 +2189,11 @@ export class App implements OnDestroy {
       try {
         await this.stageCandidate(generation, outgoing, outgoingFitMode, candidate);
       } catch (error) {
-        if (error instanceof NavigationCancelledError || generation !== this.navigationGeneration) {
-          return;
-        }
+        if (error instanceof NavigationCancelledError || generation !== this.navigationGeneration) return;
         const failedItem = error instanceof ScenePreparationError ? error.item : candidate.item;
         this.unavailableMedia.quarantine(failedItem);
         this.navigationFailures += 1;
         this.reportPreparationFailure(failedItem, error);
-        // Retry the healthy remainder within the same bounded operation.
         const remainder = omitSceneItems(candidate.scene, (item) => item.id === failedItem.id);
         if (remainder) candidates.splice(position + 1, 0,
           { ...candidate, scene: remainder, item: remainder.driver });
@@ -2114,21 +2201,41 @@ export class App implements OnDestroy {
       }
       if (generation !== this.navigationGeneration) return;
       this.unavailableMedia.clear(candidate.item);
-      if (outgoing && outgoingFitMode) {
-        this.beginCrossfade(generation, outgoing, outgoingFitMode, candidate);
-      } else {
-        this.commitPreparedCandidate(generation, candidate);
-      }
+      if (outgoing && outgoingFitMode) this.beginCrossfade(generation, outgoing, outgoingFitMode, candidate);
+      else this.commitPreparedCandidate(generation, candidate);
       return;
     }
-
     if (generation !== this.navigationGeneration) return;
     this.finishNavigationPreparation(generation);
     this.resumeCurrentCycle();
-    this.scheduleNavigationRetry(
+    this.scheduleNavigationRetry(direction,
+      exhausted ? NAVIGATION_RETRY_DELAY_MS : NAVIGATION_CONTINUATION_DELAY_MS);
+  }
+
+  private collageUnavailable(item: MediaItem): boolean {
+    return this.unavailableMedia.contains(item) || (item.kind === 'video' && this.isVideoQuarantined(item));
+  }
+
+  private warmCollage(): void {
+    if (this.collageEnabled() && !this.overlayOpen() && !this.reposeActive() &&
+      !this.preparingTransition() && !this.crossfade()) void this.collageCycle.warm(this.currentScene());
+  }
+
+  private navigationCandidates(direction: -1 | 1, preferredMediaId?: string): SceneCandidate[] {
+    const active = this.manifest()!;
+    const target = this.pendingManifest() ?? active;
+    if ((target.settings.collageMode ?? 'off') !== 'off') return this.collageCycle.candidates(
+      target, window.innerWidth / window.innerHeight, this.adaptiveMixSeed,
+      this.currentScene(), direction, preferredMediaId, (item) => this.collageUnavailable(item));
+    this.collageCycle.reset();
+    return sceneNavigationPlan({
+      active,
+      pending: this.pendingManifest(),
+      currentIndex: this.currentIndex(),
+      currentMediaId: this.currentMedia()?.id ?? null,
       direction,
-      exhausted ? NAVIGATION_RETRY_DELAY_MS : NAVIGATION_CONTINUATION_DELAY_MS,
-    );
+      ...(preferredMediaId ? { preferredMediaId } : {}),
+    }, (manifest) => this.scenesFor(manifest));
   }
 
   private stageCandidate(
@@ -2180,17 +2287,21 @@ export class App implements OnDestroy {
     }
     this.currentIndex.set(target.index);
     this.committedScene.set(target.scene);
+    this.collageCycle.commit(target);
+    this.collagePreloadAttemptKey = null;
     this.staging.set(null);
     this.preparingTransition.set(false);
     this.connectionWarning.set(null);
     this.videoPaused.set(false);
     this.persistPlaybackCheckpoint(true);
+    this.warmCollage();
     if (target.item.kind === 'video') {
       window.setTimeout(() => this.playCurrentVideo(), 0);
     }
   }
 
   private commitEmptyManifest(manifest: FrameManifest): void {
+    this.collageCycle.reset();
     this.cancelNavigation();
     this.cancelCrossfade();
     this.resetPhotoTransform();
@@ -2279,6 +2390,7 @@ export class App implements OnDestroy {
   }
 
   private cancelNavigation(): void {
+    this.cancelCollagePreload('navigation-cancelled');
     this.navigationGeneration += 1;
     this.discardStagingAttempt(new NavigationCancelledError('Preparación cancelada.'));
     this.preparingTransition.set(false);
@@ -2301,6 +2413,9 @@ export class App implements OnDestroy {
   }
 
   private reportPreparationFailure(item: MediaItem, error: unknown): void {
+    if (this.collageEnabled()) this.collageTrace.emit('media-failed', {
+      mediaIds: [item.id], reason: 'media-preparation-failed', manifestVersion: this.manifest()?.version ?? 0,
+    });
     const staging = this.staging();
     const event: ViewerMediaPreparationFailure = {
       type: 'viewer.media.preparation-failed',
@@ -2342,6 +2457,7 @@ export class App implements OnDestroy {
 
   protected onPhotoError(mediaId: string, mediaSha256: string): void {
     const failedKey = `${mediaId}:${mediaSha256}`;
+    if (this.failReadyCollagePreload(failedKey)) return;
     const attempt = this.stagingAttempt;
     if (attempt && this.staging()?.target.scene.cells.some((cell) => this.mediaIdentity(cell.item) === failedKey)) {
       this.failStagedCell(failedKey, 'La fotografía no se pudo cargar.');
@@ -2391,9 +2507,12 @@ export class App implements OnDestroy {
     }
     this.currentIndex.set(transition.target.index);
     this.committedScene.set(transition.target.scene);
+    this.collageCycle.commit(transition.target);
+    this.collagePreloadAttemptKey = null;
     this.crossfade.set(null);
     this.videoPaused.set(false);
     this.persistPlaybackCheckpoint(true);
+    this.warmCollage();
     if (this.currentMedia()?.kind === 'video') {
       window.setTimeout(() => this.playCurrentVideo(), 0);
     }
@@ -2566,6 +2685,7 @@ export class App implements OnDestroy {
   private schedulePausedVideoAdvance(mediaId: string): void {
     this.clearPausedVideoAdvance();
     const durationMs = this.settings().photoDurationSeconds * 1_000;
+    this.scheduleCollagePreload(durationMs);
     this.pausedVideoAdvanceTimer = window.setTimeout(() => {
       this.pausedVideoAdvanceTimer = undefined;
       if (
@@ -2591,6 +2711,8 @@ export class App implements OnDestroy {
   private updateVideoProgress(video: HTMLVideoElement): void {
     this.videoCurrentTime.set(Number.isFinite(video.currentTime) ? video.currentTime : 0);
     this.videoDuration.set(Number.isFinite(video.duration) ? video.duration : 0);
+    if (!video.paused && Number.isFinite(video.duration) && video.duration - video.currentTime <= 5 &&
+      this.isCurrentStableVideo(video, this.currentMedia()?.id ?? '')) void this.preloadCollage();
   }
 
   private schedulePhotoAdvance(media: MediaItem | null, duration: number): void {
@@ -2608,6 +2730,7 @@ export class App implements OnDestroy {
     }
     const generation = this.photoTimerGeneration;
     const mediaId = media.id;
+    this.scheduleCollagePreload(duration * 1_000);
     this.photoTimer = window.setTimeout(() => {
       this.photoTimer = undefined;
       if (
@@ -2627,6 +2750,8 @@ export class App implements OnDestroy {
   }
 
   private clearPhotoTimer(): void {
+    if (this.collagePreloadTimer !== undefined) window.clearTimeout(this.collagePreloadTimer);
+    this.collagePreloadTimer = undefined;
     this.photoTimerGeneration += 1;
     if (this.photoTimer !== undefined) {
       window.clearTimeout(this.photoTimer);
@@ -2684,6 +2809,8 @@ export class App implements OnDestroy {
   }
 
   private replaceSettings(settings: FrameSettings): void {
+    this.cancelCollagePreload('settings-changed');
+    this.collagePreloadAttemptKey = null;
     const manifest = this.manifest();
     if (manifest) {
       const currentId = this.currentMedia()?.id;
@@ -2692,6 +2819,7 @@ export class App implements OnDestroy {
         (manifest.settings.collageMode ?? 'off') !== (settings.collageMode ?? 'off');
       if (!regroup) this.sceneCache.set(next, this.scenesFor(manifest));
       if (regroup) {
+        this.collageCycle.reset();
         const currentScene = this.currentScene();
         this.cancelNavigation();
         this.cancelCrossfade();
@@ -2712,6 +2840,10 @@ export class App implements OnDestroy {
   }
 
   private scenesFor(manifest: FrameManifest): MediaScene[] {
+    if ((manifest.settings.collageMode ?? 'off') !== 'off') {
+      const dynamic = this.collageCycle.lookup(manifest, window.innerWidth / window.innerHeight);
+      if (dynamic) return dynamic;
+    }
     let scenes = this.sceneCache.get(manifest);
     if (!scenes) {
       scenes = buildScenes(manifest.media, manifest.settings.collageMode ?? 'off',
@@ -2803,6 +2935,8 @@ export class App implements OnDestroy {
       current?.kind === 'video' &&
       current.id === mediaId &&
       video.dataset['mediaKey'] === this.mediaIdentity(current) &&
+      video === this.currentVideoElement() &&
+      !video.closest('.stage--staging') &&
       !this.preparingTransition() &&
       !this.crossfade() &&
       !this.overlayOpen() &&
@@ -2856,7 +2990,7 @@ export class App implements OnDestroy {
 
   private viewerNavigationSnapshot(): ViewerPlaybackSnapshot['navigation'] {
     const staging = this.staging();
-    if (staging) {
+    if (staging && !this.collagePreload) {
       return {
         phase: 'staging',
         operationId: staging.operationId,
@@ -2968,6 +3102,7 @@ export class App implements OnDestroy {
   }
 
   private enterRepose(): void {
+    this.collageCycle.suspend();
     const media = this.currentMedia();
     const video = this.currentVideoElement();
     this.persistPlaybackCheckpoint(true);
@@ -2996,6 +3131,7 @@ export class App implements OnDestroy {
   }
 
   private leaveRepose(deferVideoResume = true): void {
+    this.collageCycle.resume();
     this.hideReposeMenu();
     if (this.pendingManifest()) {
       this.reposeVideoIntent = null;

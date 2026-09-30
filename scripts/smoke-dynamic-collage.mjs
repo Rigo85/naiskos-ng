@@ -64,7 +64,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (url.startsWith('/sample/')) {
-      if (brokenImage && url === '/sample/17.svg') { res.writeHead(404); res.end(); return; }
+      if (brokenImage && url === '/sample/broken-17.svg') { res.writeHead(404); res.end(); return; }
       res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
       res.end('<svg xmlns="http://www.w3.org/2000/svg" width="670" height="1000"><rect width="670" height="1000" fill="#507f9c"/></svg>'); return;
     }
@@ -135,7 +135,7 @@ try {
   await waitFor(() => events.filter((e) => e.action === 'scene-committed').length > lastCommitted);
   // A genuine HTTP/decode failure must leave the rest of the library running.
   brokenImage = true;
-  manifest.media[17] = { ...manifest.media[17], sha256: 'broken-test-revision' }; manifest.version++;
+  manifest.media[17] = { ...manifest.media[17], sha256: 'broken-test-revision', url: '/sample/broken-17.svg' }; manifest.version++;
   await waitFor(() => errors.length > 0);
   const before = events.filter((e) => e.action === 'scene-committed').length;
   await waitFor(() => events.filter((e) => e.action === 'scene-committed').length >= before + 2);

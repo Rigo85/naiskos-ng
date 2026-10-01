@@ -66,6 +66,14 @@ type AppView = 'viewer' | 'menu' | 'gallery' | 'settings' | 'notifications';
 type GalleryFilter = 'all' | 'photo' | 'video';
 type GalleryOrder = 'newest' | 'oldest';
 type SettingsSection = 'presentation' | 'widgets' | 'playback' | 'storage' | 'device';
+type NavigationSource = 'manual' | 'gallery' | 'automatic' | 'system';
+
+interface NavigationIntent {
+  direction: -1 | 1;
+  preferred?: string;
+  source: NavigationSource;
+  requestedAt: number;
+}
 
 interface RenderedSlide {
   scene: MediaScene;
@@ -75,6 +83,9 @@ interface RenderedSlide {
 }
 
 interface CrossfadeState {
+  operationId: number;
+  source: NavigationSource;
+  direction: -1 | 1;
   outgoingScene: MediaScene;
   outgoing: MediaItem;
   outgoingFitMode: FitMode;
@@ -500,7 +511,7 @@ export class App implements OnDestroy {
     return media.fitMode;
   });
 
-  private pointerStart: (GesturePoint & { pointerId: number }) | null = null;
+  private pointerStart: (GesturePoint & { pointerId: number; transition: CrossfadeState | null }) | null = null;
   private readonly activePointers = new Map<number, ActivePointer>();
   private photoGesture: PhotoGestureState | null = null;
   private suppressNavigationUntilPointersClear = false;
@@ -526,8 +537,8 @@ export class App implements OnDestroy {
     done: Promise<void>; startedAt: number } | null = null;
   private readonly photoReserve = new PhotoReserve();
   private reserveDirection: -1 | 1 = 1;
-  private manualNavigationAt: number | null = null;
-  private navigationIntent: { direction: -1 | 1; preferred?: string } | null = null;
+  private navigationIntent: NavigationIntent | null = null;
+  private deferredNavigation: { operationId: number; direction: -1 | 1; requestedAt: number } | null = null;
   private collagePreloadTimer: number | undefined;
   private collagePreloadAttemptKey: string | null = null;
   private stagingAttempt: StagingAttempt | null = null;
@@ -706,6 +717,7 @@ export class App implements OnDestroy {
 
     this.pointerStart = {
       pointerId: event.pointerId,
+      transition: this.crossfade(),
       x: event.clientX,
       y: event.clientY,
       at: event.timeStamp,
@@ -857,12 +869,12 @@ export class App implements OnDestroy {
     }
     if (action === 'next') {
       this.abandonPhotoTimerInteraction();
-      this.navigate(1, undefined, true);
+      this.navigateFromGesture(1, start.transition);
       return;
     }
     if (action === 'previous') {
       this.abandonPhotoTimerInteraction();
-      this.navigate(-1, undefined, true);
+      this.navigateFromGesture(-1, start.transition);
       return;
     }
     if (action === 'tap-left' || action === 'tap-right') {
@@ -872,7 +884,7 @@ export class App implements OnDestroy {
       this.lastTapSide = side;
       if (!isSecondTap) {
         this.abandonPhotoTimerInteraction();
-        this.navigate(side === 'left' ? -1 : 1, undefined, true);
+        this.navigateFromGesture(side === 'left' ? -1 : 1, start.transition);
         return;
       }
       this.collageTrace.emit('navigation-ignored', { reason: 'double-tap' });
@@ -1314,7 +1326,7 @@ export class App implements OnDestroy {
     this.videoDuration.set(0);
     this.closeGalleryOptions();
     this.activeView.set('viewer');
-    this.navigate(1, mediaId, true);
+    this.navigate(1, mediaId, 'gallery');
   }
 
   protected saveSettings(): void {
@@ -1572,7 +1584,7 @@ export class App implements OnDestroy {
       this.cancelCrossfade();
       this.unavailableMedia.quarantine(transition.incoming);
       this.reportPreparationFailure(transition.incoming, new Error('Falló el video entrante.'));
-      this.navigate(1, undefined, true);
+      this.navigate(1, undefined, 'system');
       return;
     }
     if (!this.isCurrentStableVideo(video, mediaId)) return;
@@ -1940,6 +1952,7 @@ export class App implements OnDestroy {
       return;
     }
     const pendingOperation = this.galleryOperation();
+    this.clearDeferredNavigation('content-changed');
     this.cancelCollagePreload('manifest-changed');
     if (pendingOperation) {
       const operatedItem = orderedNext.media.find((item) => item.id === pendingOperation.mediaId);
@@ -1994,7 +2007,7 @@ export class App implements OnDestroy {
                 (item) => item.id === checkpoint.mediaId && item.sha256 === checkpoint.mediaSha256,
               )?.id
             : undefined;
-        this.navigate(1, preferredMediaId);
+        this.navigate(1, preferredMediaId, 'system');
       }
       return;
     }
@@ -2005,7 +2018,7 @@ export class App implements OnDestroy {
     }
     if (this.preparingTransition()) {
       this.cancelNavigation();
-      if (!this.reposeActive()) window.setTimeout(() => this.navigate(1), 0);
+      if (!this.reposeActive()) window.setTimeout(() => this.navigate(1, undefined, 'system'), 0);
     }
   }
 
@@ -2046,19 +2059,48 @@ export class App implements OnDestroy {
     }
   }
 
-  private navigate(direction: -1 | 1, preferredMediaId?: string, replaceActive = false): void {
-    if (replaceActive) this.collageTrace.emit('navigation-requested', { reason: preferredMediaId ? 'gallery' : 'manual', direction });
+  private navigateFromGesture(direction: -1 | 1, startedDuring: CrossfadeState | null): void {
+    // Pointerdown may fall inside the automatic fade and pointerup just after
+    // commit. It is still the same overlapping gesture, not a request to skip C.
+    if (startedDuring?.source === 'automatic' && direction === startedDuring.direction &&
+      startedDuring.operationId === this.navigationGeneration && !this.crossfade() &&
+      !this.preparingTransition() && !this.overlayOpen() && !this.reposeActive() &&
+      this.currentScene()?.key === startedDuring.target.scene.key) {
+      this.collageTrace.emit('navigation-requested', { source: 'manual', direction });
+      this.collageTrace.emit('navigation-joined', { reason: 'automatic-just-committed', source: 'manual',
+        direction, operationId: startedDuring.operationId });
+      this.schedulePhotoAdvance(this.currentMedia(), this.settings().photoDurationSeconds);
+      return;
+    }
+    this.navigate(direction, undefined, 'manual');
+  }
+
+  private navigate(direction: -1 | 1, preferredMediaId?: string, source: NavigationSource = 'automatic', requestedAt?: number): void {
+    const at = requestedAt ?? performance.now();
+    if (requestedAt === undefined) this.collageTrace.emit('navigation-requested', { source, direction });
     if (this.overlayOpen() || this.reposeActive()) {
-      if (replaceActive) this.collageTrace.emit('navigation-ignored', { reason: 'overlay-or-repose', direction });
+      this.collageTrace.emit('navigation-ignored', { reason: 'overlay-or-repose', source, direction });
       return;
     }
     this.clearNavigationRetry();
-    if (this.crossfade()) {
-      if (replaceActive) this.collageTrace.emit('navigation-ignored', { reason: 'crossfade', direction });
+    const transition = this.crossfade();
+    if (transition) {
+      if (source === 'manual' && !preferredMediaId) {
+        if (transition.source === 'automatic' && direction === transition.direction) {
+          this.clearDeferredNavigation('joined-automatic');
+          this.collageTrace.emit('navigation-joined', { reason: 'automatic-crossfade', source, direction,
+            operationId: transition.operationId });
+        } else {
+          const replaced = this.deferredNavigation !== null;
+          this.deferredNavigation = { operationId: transition.operationId, direction, requestedAt: at };
+          this.collageTrace.emit('navigation-deferred', { reason: replaced ? 'replaced' : 'queued', source,
+            direction, operationId: transition.operationId });
+        }
+      } else this.collageTrace.emit('navigation-ignored', { reason: 'crossfade', source, direction });
       return;
     }
     if (this.preparingTransition()) {
-      if (!replaceActive) return;
+      if (source === 'automatic') return;
       if (this.navigationIntent?.direction === direction && this.navigationIntent.preferred === preferredMediaId) {
         this.collageTrace.emit('preload-joined', { operationId: this.navigationGeneration, reason: 'same-navigation' });
         return;
@@ -2070,14 +2112,29 @@ export class App implements OnDestroy {
     const active = this.manifest();
     if (!active || !(this.pendingManifest()?.media.length || active.media.length)) return;
 
-    if (replaceActive) this.manualNavigationAt = performance.now();
     this.reserveDirection = direction;
-    this.navigationIntent = { direction, preferred: preferredMediaId };
+    this.navigationIntent = { direction, preferred: preferredMediaId, source, requestedAt: at };
     this.clearPhotoTimer();
     this.clearVideoMonitoring();
     this.clearPausedVideoAdvance();
     this.clearViewerPointers();
     void this.prepareAndStartCrossfade(direction, preferredMediaId);
+  }
+
+  private clearDeferredNavigation(reason: string): void {
+    const pending = this.deferredNavigation;
+    if (!pending) return;
+    this.deferredNavigation = null;
+    this.collageTrace.emit('navigation-deferred-cleared', { reason, direction: pending.direction,
+      operationId: pending.operationId });
+  }
+
+  private recordNavigationVisible(operationId: number, reason: 'direct' | 'crossfade'): void {
+    const intent = this.navigationIntent;
+    if (!intent) return;
+    this.collageTrace.emit('navigation-visible', { operationId, source: intent.source, reason,
+      elapsedMs: Math.round(performance.now() - intent.requestedAt) });
+    this.navigationIntent = null;
   }
 
   private scheduleCollagePreload(delayMs = 0): void {
@@ -2354,7 +2411,7 @@ export class App implements OnDestroy {
     this.collagePreloadAttemptKey = null;
     this.staging.set(null);
     this.preparingTransition.set(false);
-    this.navigationIntent = null;
+    this.recordNavigationVisible(generation, 'direct');
     this.connectionWarning.set(null);
     this.videoPaused.set(false);
     this.persistPlaybackCheckpoint(true);
@@ -2392,7 +2449,7 @@ export class App implements OnDestroy {
     }
     const preferred = this.sceneRefreshId;
     this.sceneRefreshId = undefined;
-    this.navigate(1, preferred, true);
+    this.navigate(1, preferred, 'system');
   }
 
   private settleStagingAttempt(error?: Error): void {
@@ -2428,15 +2485,15 @@ export class App implements OnDestroy {
     target: SceneCandidate,
   ): void {
     if (generation !== this.navigationGeneration) return;
-    if (this.manualNavigationAt !== null) {
-      this.collageTrace.emit('navigation-visible', { operationId: generation,
-        elapsedMs: Math.round(performance.now() - this.manualNavigationAt) });
-      this.manualNavigationAt = null;
-    }
+    const intent = this.navigationIntent;
+    this.recordNavigationVisible(generation, 'crossfade');
     const outgoingVideo = this.currentVideoElement();
     if (outgoingVideo && !outgoingVideo.paused) outgoingVideo.pause();
     const durationMs = target.manifest.settings.fadeDurationMs;
     this.crossfade.set({
+      operationId: generation,
+      source: intent?.source ?? 'system',
+      direction: intent?.direction ?? 1,
       outgoing,
       outgoingScene: this.currentScene()!,
       outgoingFitMode,
@@ -2450,22 +2507,23 @@ export class App implements OnDestroy {
     this.preparingTransition.set(false);
     this.connectionWarning.set(null);
     this.clearCrossfadeTimer();
-    this.crossfadeTimer = window.setTimeout(() => this.finishCrossfade(), durationMs);
+    this.crossfadeTimer = window.setTimeout(() => this.finishCrossfade(generation), durationMs);
   }
 
   private finishNavigationPreparation(generation: number): void {
     if (generation !== this.navigationGeneration) return;
     this.discardStagingAttempt(new NavigationCancelledError('Preparación finalizada.'));
     this.preparingTransition.set(false);
+    this.navigationIntent = null;
   }
 
   private cancelNavigation(): void {
+    this.clearDeferredNavigation('navigation-cancelled');
     this.cancelCollagePreload('navigation-cancelled');
     this.navigationGeneration += 1;
     this.discardStagingAttempt(new NavigationCancelledError('Preparación cancelada.'));
     this.preparingTransition.set(false);
     this.navigationIntent = null;
-    this.manualNavigationAt = null;
     this.clearNavigationRetry();
   }
 
@@ -2473,7 +2531,7 @@ export class App implements OnDestroy {
     this.clearNavigationRetry();
     this.navigationRetryTimer = window.setTimeout(() => {
       this.navigationRetryTimer = undefined;
-      this.navigate(direction);
+      this.navigate(direction, undefined, 'system');
     }, delayMs);
   }
 
@@ -2507,6 +2565,7 @@ export class App implements OnDestroy {
   }
 
   private cancelCrossfade(): void {
+    this.clearDeferredNavigation('crossfade-cancelled');
     if (!this.crossfade()) return;
     this.clearCrossfadeTimer();
     this.crossfade.set(null);
@@ -2544,7 +2603,7 @@ export class App implements OnDestroy {
         incomingItem,
         new Error('Falló la fotografía entrante.'),
       );
-      this.navigate(1, undefined, true);
+      this.navigate(1, undefined, 'system');
       return;
     }
     const current = this.currentScene()?.cells.find((cell) => this.mediaIdentity(cell.item) === failedKey)?.item;
@@ -2557,7 +2616,7 @@ export class App implements OnDestroy {
       return;
     this.unavailableMedia.quarantine(current);
     this.reportPreparationFailure(current, new Error('Falló la fotografía visible.'));
-    this.navigate(1, undefined, true);
+    this.navigate(1, undefined, 'system');
   }
 
   protected onStagedVideoReady(video: HTMLVideoElement, mediaKey: string): void {
@@ -2568,9 +2627,9 @@ export class App implements OnDestroy {
     this.markStagedCellReady(mediaKey);
   }
 
-  private finishCrossfade(): void {
+  private finishCrossfade(operationId: number): void {
     const transition = this.crossfade();
-    if (!transition) return;
+    if (!transition || transition.operationId !== operationId) return;
     this.crossfadeTimer = undefined;
     this.resetPhotoTransform();
     this.manifest.set(transition.target.manifest);
@@ -2584,6 +2643,16 @@ export class App implements OnDestroy {
     this.crossfade.set(null);
     this.videoPaused.set(false);
     this.persistPlaybackCheckpoint(true);
+    // Consume before starting B's timer/playback/lookahead. Bind the request to
+    // this exact committed transition, never to a later recovery or wake-up.
+    const pending = this.deferredNavigation;
+    this.deferredNavigation = null;
+    if (pending?.operationId === transition.operationId && !this.overlayOpen() && !this.reposeActive()) {
+      this.collageTrace.emit('navigation-deferred-used', { direction: pending.direction,
+        operationId: transition.operationId, elapsedMs: Math.round(performance.now() - pending.requestedAt) });
+      this.navigate(pending.direction, undefined, 'manual', pending.requestedAt);
+      return;
+    }
     this.warmCollage();
     this.scheduleCollagePreload(0);
     if (this.currentMedia()?.kind === 'video') {
@@ -2848,7 +2917,7 @@ export class App implements OnDestroy {
     if (this.sceneRefreshId && !this.overlayOpen()) {
       const preferred = this.sceneRefreshId;
       this.sceneRefreshId = undefined;
-      this.navigate(1, preferred, true);
+      this.navigate(1, preferred, 'system');
       return;
     }
     const video = this.currentVideoElement();
@@ -2885,12 +2954,21 @@ export class App implements OnDestroy {
     const manifest = this.manifest();
     if (manifest) {
       if (manifest.settings.order !== settings.order || manifest.settings.collageMode !== settings.collageMode ||
-        manifest.settings.defaultFitMode !== settings.defaultFitMode) this.cancelCollagePreload('settings-changed');
+        manifest.settings.defaultFitMode !== settings.defaultFitMode) {
+        this.clearDeferredNavigation('settings-changed');
+        this.cancelCollagePreload('settings-changed');
+      }
       const currentId = this.currentMedia()?.id;
       const next = this.orderManifest({ ...manifest, settings });
       const regroup = manifest.settings.order !== settings.order ||
         (manifest.settings.collageMode ?? 'off') !== (settings.collageMode ?? 'off');
       if (!regroup) this.sceneCache.set(next, this.scenesFor(manifest));
+      const transition = this.crossfade();
+      if (!regroup && transition) {
+        // A local audio/text edit during the fade must survive its commit.
+        this.crossfade.set({ ...transition, target: { ...transition.target,
+          manifest: { ...transition.target.manifest, settings } } });
+      }
       if (regroup) {
         this.collageCycle.reset();
         const currentScene = this.currentScene();
@@ -2966,6 +3044,7 @@ export class App implements OnDestroy {
       !video ||
       !mediaId ||
       this.currentMedia()?.kind !== 'video' ||
+      this.preparingTransition() || this.crossfade() ||
       this.overlayOpen() ||
       this.reposeActive()
     ) {

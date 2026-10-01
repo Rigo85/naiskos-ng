@@ -131,6 +131,7 @@ try {
   const regularMedia = [...manifest.media];
   slowPhotosMs = 700;
   manifest.settings.photoDurationSeconds = 30;
+  manifest.settings.fadeDurationMs = 1000; // Wide controlled window for real input delivery.
   manifest.media = regularMedia.map((m, i) => ({ ...m, kind: 'photo',
     sha256: `slow-${i}`, url: `/sample/slow-${i}.svg`, posterUrl: null }));
   manifest.version++;
@@ -141,12 +142,25 @@ try {
   await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1000, y: 350, button: 'left', clickCount: 1 });
   await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1000, y: 350, button: 'left', clickCount: 1 });
   await waitFor(() => events.some((e) => e.action === 'preload-joined'), 5_000);
-  await waitFor(() => events.filter((e) => e.action === 'scene-committed').length > beforeManual, 5_000);
-  assert(events.some((e) => e.action === 'navigation-visible' && e.details.elapsedMs < 3_000));
+  await waitFor(() => evaluate(`!!document.querySelector('.stage--incoming')`), 5_000);
+  await delay(360); // Separate intentional tap, not the second half of a double tap.
+  await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1000, y: 350, button: 'left', clickCount: 1 });
+  await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1000, y: 350, button: 'left', clickCount: 1 });
+  await waitFor(() => events.some((e) => e.action === 'navigation-deferred-used'), 5_000);
+  await waitFor(() => events.filter((e) => e.action === 'scene-committed').length === beforeManual + 2, 8_000);
+  assert(events.some((e) => e.action === 'navigation-visible' && e.details.source === 'manual' && e.details.elapsedMs < 3_000));
   await waitFor(() => events.some((e) => e.action === 'reserve-ready' && e.details.reason === 'ready'), 5_000);
   slowPhotosMs = 0; manifest.media = regularMedia; manifest.settings.photoDurationSeconds = 1; manifest.version++;
   // Existing 30s scene keeps its timer until the new manifest commits.
   await waitFor(() => events.some((e) => e.action === 'scene-committed' && e.details.manifestVersion === manifest.version), 45_000);
+  const joinedBefore = events.filter((e) => e.action === 'navigation-joined').length;
+  const deferredBefore = events.filter((e) => e.action === 'navigation-deferred-used').length;
+  await waitFor(() => evaluate(`!!document.querySelector('.stage--incoming')`));
+  await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1000, y: 350, button: 'left', clickCount: 1 });
+  await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1000, y: 350, button: 'left', clickCount: 1 });
+  await waitFor(() => events.filter((e) => e.action === 'navigation-joined').length > joinedBefore);
+  await delay(1100);
+  assert.equal(events.filter((e) => e.action === 'navigation-deferred-used').length, deferredBefore);
   // Repose preserves the scene/round, while polling and the clock continue.
   repose.active = true; repose.source = 'manual'; repose.updatedAt = new Date().toISOString();
   await waitFor(() => events.some((e) => e.action === 'planning-suspended'));
@@ -183,7 +197,9 @@ try {
     precacheHits: events.filter((e) => e.action === 'preload-used').length, recoveredMediaFailures: errors.length,
     joinedPreloads: events.filter((e) => e.action === 'preload-joined').length,
     auxiliaryReady: events.filter((e) => e.action === 'reserve-ready' && e.details.reason === 'ready').length,
-    manualLatenciesMs: events.filter((e) => e.action === 'navigation-visible').map((e) => e.details.elapsedMs),
+    manualLatenciesMs: events.filter((e) => e.action === 'navigation-visible' && e.details.source === 'manual').map((e) => e.details.elapsedMs),
+    deferredUsed: events.filter((e) => e.action === 'navigation-deferred-used').length,
+    joinedAutomatic: events.filter((e) => e.action === 'navigation-joined').length,
     heartbeatCount: beats.length, videoRecoveries: playbackErrors.length, benchmark }, null, 2));
 } catch (error) {
   console.error(JSON.stringify({ lastEvents: events.slice(-20), errors, playbackErrors }));

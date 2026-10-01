@@ -213,8 +213,10 @@ function dispatchPointer(
   clientY: number,
   pointerId = 1,
   pointerType = 'mouse',
+  at?: number,
 ): void {
   const event = new Event(type, { bubbles: true, cancelable: true });
+  if (at !== undefined) Object.defineProperty(event, 'timeStamp', { value: at });
   Object.defineProperties(event, {
     pointerId: { value: pointerId },
     pointerType: { value: pointerType },
@@ -352,9 +354,9 @@ describe('App', () => {
     const operation = c.collagePreload;
     expect(node).toBeTruthy(); expect(operation.ready).toBe(false);
     const visible = c.currentScene().key;
-    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(1);
+    c.navigate(1, undefined, 'manual'); await vi.advanceTimersByTimeAsync(1);
     const generation = c.navigationGeneration;
-    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(1);
+    c.navigate(1, undefined, 'manual'); await vi.advanceTimersByTimeAsync(1);
     expect(c.navigationGeneration).toBe(generation);
     expect(c.collagePreload).toBe(operation);
     fixture.detectChanges(); expect(fixture.nativeElement.querySelector('.stage--staging img')).toBe(node);
@@ -389,7 +391,7 @@ describe('App', () => {
     const c = fixture.componentInstance as any, visible = c.currentScene().key;
     await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
     const stale = fixture.nativeElement.querySelector('.stage--staging img');
-    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(1);
+    c.navigate(1, undefined, 'manual'); await vi.advanceTimersByTimeAsync(1);
     c.applyReposeState({ ...awakeRepose, active: true, updatedAt: '2026-10-01T23:00:00Z' });
     stale.dispatchEvent(new Event('load')); await vi.advanceTimersByTimeAsync(10_000);
     expect(c.currentScene().key).toBe(visible); expect(c.crossfade()).toBeNull();
@@ -406,7 +408,7 @@ describe('App', () => {
     const preload = c.collagePreload;
     c.replaceSettings({ ...c.settings(), volume: .17, showCaption: false });
     expect(c.collagePreload).toBe(preload);
-    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    c.navigate(1, undefined, 'manual'); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
     expect(c.settings().volume).toBe(.17); expect(c.settings().showCaption).toBe(false);
     expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'preload-used')).toBe(true);
     fixture.destroy(); vi.useRealTimers();
@@ -420,8 +422,8 @@ describe('App', () => {
     await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
     const target = c.collagePreload.target.scene.cells[0].item.id;
     await vi.advanceTimersByTimeAsync(4000);
-    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(500);
-    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(600);
+    c.navigate(1, undefined, 'manual'); await vi.advanceTimersByTimeAsync(500);
+    c.navigate(1, undefined, 'manual'); await vi.advanceTimersByTimeAsync(600);
     expect(reportMediaPreparationFailureMock.mock.calls.some(([event]: any[]) => event.mediaId === target)).toBe(true);
     fixture.destroy(); vi.useRealTimers();
   });
@@ -438,9 +440,9 @@ describe('App', () => {
       const currentIds = c.currentScene().cells.map((cell: any) => cell.item.id);
       const nextIds = c.collagePreload.target.scene.cells.map((cell: any) => cell.item.id);
       expect(auxiliary.every((m) => !currentIds.includes(m.id) && !nextIds.includes(m.id))).toBe(true);
-      c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+      c.navigate(1, undefined, 'manual'); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
     }
-    c.navigate(-1, undefined, true); await makeStagedSceneReady(fixture);
+    c.navigate(-1, undefined, 'manual'); await makeStagedSceneReady(fixture);
     await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
     await vi.advanceTimersByTimeAsync(1); await makeStagedSceneReady(fixture);
     expect(c.reserveDirection).toBe(-1);
@@ -461,7 +463,7 @@ describe('App', () => {
     for (let i = 0; i < 4; i++) {
       await vi.advanceTimersByTimeAsync(1); await makeStagedSceneReady(fixture);
       expect(fixture.nativeElement.querySelectorAll('video').length).toBeLessThanOrEqual(2);
-      c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
+      c.navigate(1, undefined, 'manual'); await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
       expect(fixture.nativeElement.querySelectorAll('video').length).toBeLessThanOrEqual(2);
       await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
     }
@@ -2176,7 +2178,7 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
-  it('ignora navegaciones adicionales durante el crossfade', async () => {
+  it('ignora órdenes automáticas adicionales durante el crossfade', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
     const fixture = TestBed.createComponent(App);
@@ -2205,6 +2207,199 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  async function beginTestFade(source: 'manual' | 'automatic' = 'manual', items = [photo, secondPhoto, thirdPhoto]) {
+    servedManifest = { ...manifest, media: items };
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    c.navigate(1, undefined, source); await makeStagedSceneReady(fixture);
+    expect(c.crossfade()).not.toBeNull();
+    return { fixture, c };
+  }
+
+  it('conserva una sola intención durante el fundido manual y la consume una vez desde B', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade();
+    const transition = c.crossfade();
+    for (let i = 0; i < 5; i++) c.navigate(1, undefined, 'manual');
+    expect(c.deferredNavigation.operationId).toBe(transition.operationId);
+    expect(c.currentMedia().id).toBe(photo.id);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(secondPhoto.id);
+    expect(c.deferredNavigation).toBeNull();
+    expect(c.staging().target.item.id).toBe(thirdPhoto.id);
+    expect(fixture.nativeElement.querySelectorAll('.stage')).toHaveLength(2);
+    await makeStagedSceneReady(fixture);
+    c.finishCrossfade(transition.operationId); // A stale timer cannot confirm the next fade.
+    expect(c.currentMedia().id).toBe(secondPhoto.id);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(thirdPhoto.id); expect(c.crossfade()).toBeNull();
+    expect(reportCollageEventMock.mock.calls.filter(([e]: any[]) => e.action === 'navigation-deferred-used')).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(29_900); expect(c.crossfade()).toBeNull();
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('la última dirección reemplaza la pendiente y retrocede desde B, no desde A', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade();
+    c.navigate(1, undefined, 'manual'); c.navigate(-1, undefined, 'manual');
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.staging().target.item.id).toBe(photo.id);
+    await makeStagedSceneReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(photo.id); expect(c.deferredNavigation).toBeNull();
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('un toque adelante durante avance automático se une sin añadir C y anula un retroceso pendiente', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade('automatic');
+    c.navigate(-1, undefined, 'manual'); expect(c.deferredNavigation).not.toBeNull();
+    c.navigate(1, undefined, 'manual'); expect(c.deferredNavigation).toBeNull();
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(secondPhoto.id); expect(c.staging()).toBeNull();
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'navigation-joined')).toBe(true);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('permite pedir retroceso durante un fundido automático, sin guardar eventos automáticos tardíos', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade('automatic');
+    c.navigate(-1, undefined, 'manual'); c.navigate(1);
+    expect(c.deferredNavigation.direction).toBe(-1);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.staging().target.item.id).toBe(photo.id);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it.each(['menu', 'gallery', 'repose', 'content', 'order', 'quiesce'])(
+    'descarta la intención pendiente por %s y ningún callback tardío la ejecuta', async (reason) => {
+      vi.useFakeTimers(); const { fixture, c } = await beginTestFade();
+      c.navigate(1, undefined, 'manual');
+      if (reason === 'menu') c.openMainMenu();
+      if (reason === 'gallery') c.openGallery();
+      if (reason === 'repose') c.applyReposeState({ ...awakeRepose, active: true, updatedAt: '2026-10-02T00:00:00Z' });
+      if (reason === 'content') c.receiveManifest({ ...servedManifest, version: 2, media: [photo, secondPhoto] });
+      if (reason === 'order') c.replaceSettings({ ...c.settings(), order: 'oldest' });
+      if (reason === 'quiesce') { c.cancelNavigation(); c.cancelCrossfade(); }
+      expect(c.deferredNavigation).toBeNull();
+      await vi.advanceTimersByTimeAsync(1000); fixture.detectChanges();
+      expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'navigation-deferred-used')).toBe(false);
+      fixture.destroy(); vi.useRealTimers();
+    },
+  );
+
+  it('volumen y texto no descartan la petición pendiente', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade();
+    c.navigate(1, undefined, 'manual'); const pending = c.deferredNavigation;
+    c.replaceSettings({ ...c.settings(), volume: .2, showCaption: false });
+    expect(c.deferredNavigation).toBe(pending);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.staging().target.item.id).toBe(thirdPhoto.id);
+    expect(c.settings().volume).toBe(.2); expect(c.settings().showCaption).toBe(false);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('un fallo del entrante descarta la petición, y la recuperación no se etiqueta manual', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade();
+    c.navigate(-1, undefined, 'manual');
+    fixture.nativeElement.querySelector('.stage--incoming img').dispatchEvent(new Event('error'));
+    await vi.advanceTimersByTimeAsync(0); fixture.detectChanges();
+    expect(c.deferredNavigation).toBeNull();
+    expect(c.staging().target.item.id).toBe(thirdPhoto.id);
+    await makeStagedSceneReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(thirdPhoto.id);
+    expect(reportCollageEventMock.mock.calls.map(([e]: any[]) => e).filter(e => e.action === 'navigation-visible').at(-1).details.source).toBe('system');
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('un video intermedio no arranca audio ni temporizador mientras se prepara la petición pendiente', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade('manual', [photo, video, thirdPhoto]);
+    vi.mocked(HTMLMediaElement.prototype.play).mockClear();
+    c.navigate(1, undefined, 'manual');
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    const element = fixture.nativeElement.querySelector('.stage--stable video');
+    c.onVideoLoaded(element, video.id); c.playCurrentVideo(); c.onVideoEnded(element, video.id);
+    expect(HTMLMediaElement.prototype.play).not.toHaveBeenCalled();
+    expect(c.currentMedia().id).toBe(video.id); expect(c.staging().target.item.id).toBe(thirdPhoto.id);
+    expect(c.photoTimer).toBeUndefined(); expect(c.pausedVideoAdvanceTimer).toBeUndefined();
+    expect(fixture.nativeElement.querySelectorAll('video').length).toBeLessThanOrEqual(2);
+    await makeStagedSceneReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(thirdPhoto.id);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('cerrar una medición directa de arranque impide atribuir los 30s a una orden manual', async () => {
+    vi.useFakeTimers(); servedManifest = { ...manifest, media: [photo, secondPhoto] };
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    expect(c.navigationIntent).toBeNull();
+    const direct = reportCollageEventMock.mock.calls.map(([e]: any[]) => e).find(e => e.action === 'navigation-visible');
+    expect(direct.details.source).toBe('system'); expect(direct.details.reason).toBe('direct');
+    await vi.advanceTimersByTimeAsync(30_000); await makeStagedSceneReady(fixture);
+    const timed = reportCollageEventMock.mock.calls.map(([e]: any[]) => e).filter(e => e.action === 'navigation-visible').at(-1);
+    expect(timed.details.source).toBe('automatic'); expect(timed.details.elapsedMs).toBeLessThan(100);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('si falla el siguiente material de la petición, el video B vuelve a reproducirse', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade('manual', [photo, video, thirdPhoto]);
+    c.navigate(1, undefined, 'manual');
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    vi.mocked(HTMLMediaElement.prototype.play).mockClear();
+    for (const expected of [thirdPhoto.id, photo.id]) {
+      expect(c.staging().target.item.id).toBe(expected);
+      fixture.nativeElement.querySelector('.stage--staging img').dispatchEvent(new Event('error'));
+      await vi.advanceTimersByTimeAsync(0); fixture.detectChanges();
+    }
+    expect(c.currentMedia().id).toBe(video.id); expect(c.preparingTransition()).toBe(false);
+    expect(c.deferredNavigation).toBeNull(); expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('un doble toque conserva un solo avance, también si cae durante el fundido', async () => {
+    vi.useFakeTimers(); servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    const frame = fixture.nativeElement.querySelector('.frame') as HTMLElement;
+    setViewerBounds(frame);
+    dispatchPointer(frame, 'pointerdown', 1000, 400, 1, 'touch', 1000);
+    dispatchPointer(frame, 'pointerup', 1000, 400, 1, 'touch', 1050);
+    await makeStagedSceneReady(fixture);
+    dispatchPointer(frame, 'pointerdown', 1000, 400, 1, 'touch', 1150);
+    dispatchPointer(frame, 'pointerup', 1000, 400, 1, 'touch', 1200);
+    expect(c.deferredNavigation).toBeNull();
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(secondPhoto.id); expect(c.staging()).toBeNull();
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it.each([449, 450])('una orden a los %i ms del fundido produce sólo un cambio adicional', async (when) => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade();
+    await vi.advanceTimersByTimeAsync(when); fixture.detectChanges();
+    c.navigate(1, undefined, 'manual');
+    await vi.advanceTimersByTimeAsync(450 - when); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(secondPhoto.id); expect(c.staging().target.item.id).toBe(thirdPhoto.id);
+    await makeStagedSceneReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(thirdPhoto.id); expect(c.deferredNavigation).toBeNull();
+    expect(c.crossfade()).toBeNull();
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('un toque iniciado en el fundido automático y soltado después no salta C ni detiene el reloj', async () => {
+    vi.useFakeTimers(); const { fixture, c } = await beginTestFade('automatic');
+    const frame = fixture.nativeElement.querySelector('.frame') as HTMLElement; setViewerBounds(frame);
+    await vi.advanceTimersByTimeAsync(449);
+    dispatchPointer(frame, 'pointerdown', 1000, 400, 1, 'touch', 1000);
+    await vi.advanceTimersByTimeAsync(2); fixture.detectChanges();
+    dispatchPointer(frame, 'pointerup', 1000, 400, 1, 'touch', 1050);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(c.currentMedia().id).toBe(secondPhoto.id); expect(c.staging()).toBeNull();
+    expect(c.deferredNavigation).toBeNull(); expect(c.photoTimer).toBeDefined();
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) =>
+      e.action === 'navigation-joined' && e.details.reason === 'automatic-just-committed')).toBe(true);
+    await vi.advanceTimersByTimeAsync(30_000); fixture.detectChanges();
+    expect(c.staging().target.item.id).toBe(thirdPhoto.id);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
   it('sustituye una preparación manual e ignora el evento tardío de la anterior', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [photo, secondPhoto, thirdPhoto] };
@@ -2214,14 +2409,14 @@ describe('App', () => {
     await makeStagedMediaReady(fixture);
 
     const component = fixture.componentInstance as unknown as {
-      navigate(direction: -1 | 1, preferredMediaId?: string, replaceActive?: boolean): void;
+      navigate(direction: -1 | 1, preferredMediaId?: string, source?: 'manual' | 'gallery' | 'automatic' | 'system'): void;
     };
     component.navigate(1);
     fixture.detectChanges();
     const staleImage = (fixture.nativeElement as HTMLElement).querySelector(
       '.stage--staging img',
     ) as HTMLImageElement;
-    component.navigate(-1, undefined, true);
+    component.navigate(-1, undefined, 'manual');
     fixture.detectChanges();
     Object.defineProperty(staleImage, 'decode', {
       configurable: true,

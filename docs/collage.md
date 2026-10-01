@@ -91,6 +91,33 @@ arriba hacia abajo abre el menú, igual que en modo individual; no hay un botón
 adicional. No hay navegación por arrastre horizontal ni zoom en collage. La
 galería mantiene sus controles y gestos habituales.
 
+### Órdenes durante el fundido
+
+La misma política se aplica a presentación individual y collage. Sólo hay un
+fundido en ejecución y como máximo una intención manual pendiente, no una cola
+de pasos ni otro reproductor:
+
+- En un fundido iniciado manualmente, otro gesto válido guarda una dirección;
+  los siguientes la reemplazan. Se resuelve desde la escena entrante una vez
+  confirmada, respetando historial, orden y cuarentena.
+- Avanzar durante un fundido automático se considera atendido por ese cambio:
+  no añade otro salto. También cubre un contacto que empezó durante ese fundido
+  y terminó justo después de confirmarse. Retroceder puede quedar pendiente;
+  volver a pedir avance cancela ese retroceso y se une al automático.
+- Se conserva el filtro de doble toque de 350 ms. Sólo llegan a esta política
+  gestos de navegación válidos; controles de video, zoom y menú no son avances.
+- La intención se consume una sola vez y sólo al confirmar el fundido asociado.
+  Cancelación/fallo, menú, galería, reposo, salida/actualización, cambios reales
+  de biblioteca u orden/modo/encuadre global la descartan. Volumen, texto y
+  publicaciones puramente decorativas no necesitan descartarla.
+- Se atiende antes de arrancar el temporizador/audio de la escena intermedia.
+  La preparación siguiente conserva sus límites y recuperación; si falla, la
+  escena disponible recupera su ciclo normal. No se fuerza un tercer video.
+
+No cambia la duración configurada de fotos ni fundidos. Una sucesión de gestos
+deliberados puede recorrer varias escenas, pero no deja pasos acumulados para
+ejecutarlos después de que el usuario deje de tocar.
+
 ## Reproducción y preparación
 
 Las fotos comparten la duración configurada. Puede haber un único video y sus

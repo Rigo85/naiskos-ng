@@ -137,7 +137,9 @@ try {
   manifest.version++;
   const slowVersion = manifest.version;
   await waitFor(() => events.some((e) => e.action === 'scene-committed' && e.details.manifestVersion === slowVersion));
-  await waitFor(() => evaluate(`!!document.querySelector('.stage--stable') && !!document.querySelector('.stage--staging')`));
+  // Planner traces can already refer to the new manifest while an older scene
+  // is finishing. Wait for actual slow media on screen, not just its trace.
+  await waitFor(() => evaluate(`!!document.querySelector('.stage--stable img[src^="/sample/slow-"]') && !!document.querySelector('.stage--staging img[src^="/sample/slow-"]')`));
   const beforeManual = events.filter((e) => e.action === 'scene-committed').length;
   await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1000, y: 350, button: 'left', clickCount: 1 });
   await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1000, y: 350, button: 'left', clickCount: 1 });
@@ -153,6 +155,7 @@ try {
   slowPhotosMs = 0; manifest.media = regularMedia; manifest.settings.photoDurationSeconds = 1; manifest.version++;
   // Existing 30s scene keeps its timer until the new manifest commits.
   await waitFor(() => events.some((e) => e.action === 'scene-committed' && e.details.manifestVersion === manifest.version), 45_000);
+  await waitFor(() => evaluate(`!!document.querySelector('.stage--stable') && !document.querySelector('.stage--stable img[src^="/sample/slow-"]')`), 45_000);
   const joinedBefore = events.filter((e) => e.action === 'navigation-joined').length;
   const deferredBefore = events.filter((e) => e.action === 'navigation-deferred-used').length;
   await waitFor(() => evaluate(`!!document.querySelector('.stage--incoming')`));

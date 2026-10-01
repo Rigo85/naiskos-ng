@@ -1939,6 +1939,119 @@ describe('App', () => {
     vi.useRealTimers();
   });
 
+  it.each(['seek', 'technical-pause'])('recupera y omite un video atrapado en %s sin eventos finales', async (reason) => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [{...video,durationSeconds:63.914}, photo] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges(); await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture); fixture.detectChanges();
+    const c = fixture.componentInstance as any;
+    const element = (fixture.nativeElement as HTMLElement).querySelector('video')!;
+    Object.defineProperties(element, {duration:{configurable:true,value:63.914},
+      currentTime:{configurable:true,writable:true,value:63.589997},
+      paused:{configurable:true,value:false},seeking:{configurable:true,value:true}});
+    vi.spyOn(element,'load').mockImplementation(()=>undefined);
+    c.videoPlaybackState.set('loading');
+    element.dispatchEvent(new Event(reason === 'seek' ? 'seeking' : 'pause'));
+    await vi.advanceTimersByTimeAsync(20001); fixture.detectChanges();
+    await makeStagedMediaReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(reportPlaybackEventMock).toHaveBeenCalledWith(expect.objectContaining({type:'viewer.playback.recovery'}));
+    expect(reportPlaybackEventMock).toHaveBeenCalledWith(expect.objectContaining({type:'viewer.playback.skipped'}));
+    expect(c.currentMedia().id).toBe(photo.id);
+    expect(JSON.parse(window.localStorage.getItem('naiskos.video-exclusions.v1')!)).toHaveLength(1);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('un final normal prevalece sobre una cuenta de pausa vencida sin falsa cuarentena', async () => {
+    vi.useFakeTimers(); servedManifest={...manifest,media:[video,photo]};
+    const fixture=TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedMediaReady(fixture); fixture.detectChanges();
+    const c=fixture.componentInstance as any;
+    const element=(fixture.nativeElement as HTMLElement).querySelector('video')!;
+    Object.defineProperties(element,{duration:{configurable:true,value:1.1},currentTime:{configurable:true,value:1.1},ended:{configurable:true,value:true}});
+    c.sceneLease.pause(performance.now(),0); c.videoPaused.set(false);
+    c.checkSceneLease(); await vi.advanceTimersByTimeAsync(0); fixture.detectChanges();
+    await makeStagedMediaReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(photo.id);
+    expect(reportPlaybackEventMock).not.toHaveBeenCalledWith(expect.objectContaining({type:'viewer.playback.skipped'}));
+    expect(c.isVideoQuarantined(video)).toBe(false);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('el límite independiente salta aunque se pierda toda la vigilancia rápida', async () => {
+    vi.useFakeTimers();
+    servedManifest = { ...manifest, media: [{...video,durationSeconds:1},photo] };
+    const fixture = TestBed.createComponent(App);
+    fixture.detectChanges(); await vi.advanceTimersByTimeAsync(0);
+    await makeStagedMediaReady(fixture); fixture.detectChanges();
+    const c = fixture.componentInstance as any;
+    c.clearVideoMonitoring();
+    await vi.advanceTimersByTimeAsync(21500); fixture.detectChanges();
+    await makeStagedMediaReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(photo.id);
+    expect(reportPlaybackEventMock).toHaveBeenCalledWith(expect.objectContaining({reason:'scene-budget-expired'}));
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('si sólo existe el video averiado no lo reproduce en bucle y mantiene reintento acotado', async () => {
+    vi.useFakeTimers(); servedManifest={...manifest,media:[{...video,durationSeconds:1}]};
+    const fixture=TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedMediaReady(fixture); fixture.detectChanges();
+    const c=fixture.componentInstance as any; c.clearVideoMonitoring();
+    await vi.advanceTimersByTimeAsync(21500); fixture.detectChanges();
+    expect(c.viewerNavigationSnapshot()).toMatchObject({phase:'degraded',deadlineMs:30000});
+    const operation=c.navigationGeneration;
+    await vi.advanceTimersByTimeAsync(30000); fixture.detectChanges();
+    expect(c.navigationGeneration).toBe(operation+1);
+    expect(c.sceneLease.expired).toBe(true);
+    expect(c.isVideoQuarantined(video)).toBe(true);
+    expect(c.connectionWarning()).toContain('Reintentando');
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('la exclusión persistida impide restaurar el video averiado tras recrear el visor', async () => {
+    vi.useFakeTimers(); servedManifest={...manifest,media:[video,photo]};
+    window.localStorage.setItem('naiskos.video-exclusions.v1',JSON.stringify([[`${video.id}:${video.sha256}`,Date.now()+1800000]]));
+    const fixture=TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedMediaReady(fixture); fixture.detectChanges();
+    expect((fixture.componentInstance as any).currentMedia().id).toBe(photo.id);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('reposo conserva el límite restante y el intento de recuperación ya consumido', async () => {
+    vi.useFakeTimers(); servedManifest={...manifest,media:[{...video,durationSeconds:60},photo]};
+    const fixture=TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedMediaReady(fixture); fixture.detectChanges();
+    const c=fixture.componentInstance as any;
+    const lease=c.sceneLease; expect(lease.takeRecovery()).toBe(true);
+    c.clearVideoMonitoring();
+    await vi.advanceTimersByTimeAsync(20000);
+    servedRepose={...awakeRepose,active:true,source:'manual',updatedAt:'2026-10-01T17:00:00Z'};
+    c.applyReposeState(servedRepose);
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(lease.snapshot(performance.now()).elapsedMs).toBeLessThanOrEqual(20001);
+    servedRepose={...servedRepose,active:false,updatedAt:'2026-10-01T17:01:00Z'};
+    c.applyReposeState(servedRepose);
+    expect(c.sceneLease).toBe(lease); expect(lease.takeRecovery()).toBe(false);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('una orden tardía del agente no salta una escena nueva; una exclusión vigente sí', async () => {
+    vi.useFakeTimers(); servedManifest={...manifest,media:[video,photo]};
+    const fixture=TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedMediaReady(fixture); fixture.detectChanges();
+    const c=fixture.componentInstance as any;
+    const runtime=vi.spyOn(agentApiMock,'getRuntimeControl').mockReturnValue(of({quiesceId:null,
+      playbackSafety:{healthy:false,reason:'video-no-progress',leaseId:'obsolete'}}) as any);
+    await vi.advanceTimersByTimeAsync(1000); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(video.id);
+    runtime.mockReturnValue(of({quiesceId:null,playbackExclusions:[{mediaId:video.id,sha256:video.sha256,until:Date.now()+1800000}]}) as any);
+    await vi.advanceTimersByTimeAsync(1000); fixture.detectChanges();
+    await makeStagedMediaReady(fixture); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentMedia().id).toBe(photo.id);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
   it('reconoce el final efectivo aunque Chromium no emita ended', async () => {
     vi.useFakeTimers();
     servedManifest = { ...manifest, media: [video, photo] };

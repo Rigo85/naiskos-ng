@@ -223,6 +223,43 @@ Instalar mediante el mecanismo normal de releases firmadas.
 
 ## Trazas y pruebas
 
+### Límite independiente por presentación
+
+Cada escena confirmada (individual o mosaico) recibe una identidad nueva y un
+presupuesto monotónico. Precargar no inicia ese presupuesto. Con video se usa
+la duración normalizada del manifiesto más **20 s de margen total**, compartidos
+por las recuperaciones; no se añaden al final de una reproducción normal. Sin
+duración válida se usa el límite del pipeline (120 s); el límite defensivo para
+una duración declarada es 122 s. Fotos conservan el intervalo configurado, con
+1 s de tolerancia para la protección secundaria.
+
+- La vigilancia rápida mantiene plazos de 6 s sin progreso y 10 s para arranque,
+  búsqueda o recuperación. `seeking`, una pausa técnica y eventos `playing` no
+  pueden cancelar el límite total. Sólo se intenta recuperar **una vez por visita**,
+  aunque después vuelva brevemente el progreso o se abra el menú.
+- Menús, reposo y actualización suspenden el consumo; volver no regala margen
+  de video ni otro intento. La pausa del usuario avanza al vencer el intervalo
+  fotográfico; dar play la cancela. Una pausa vencida no acusa al archivo de estar
+  averiado. Mover la barra ajusta el tiempo de contenido restante, no el margen.
+- El final normal tiene prioridad sobre las protecciones. Al vencer el límite
+  se busca otra escena con la navegación/precarga existente. El video problemático
+  queda excluido por identidad y hash durante 30 min, persistidos localmente
+  (máximo 128 entradas), sin borrar ni modificar el archivo. Una variante corregida
+  tiene otro hash y no hereda la exclusión.
+- Si no queda contenido utilizable, se conserva la interfaz y se reintenta cada
+  30 s; no se reproduce en bucle el archivo fallido ni se reinicia por ese estado
+  controlado. Un contacto fotográfico perdido se libera a los 30 s.
+- El agente contrasta progreso y tiempo con su propio reloj y la duración del
+  manifiesto. No basta con recibir heartbeats para declarar `runtime.ready`.
+  Una orden atrasada de otra presentación no salta la actual. Si el visor no puede
+  ejecutar el salto, actúa el watchdog de Chromium ya instalado, con sus límites
+  de frecuencia. No se incorpora otro proceso de vigilancia.
+
+La protección del visor depende de que ejecute JavaScript; la del agente y el
+watchdog cubren el bloqueo del navegador. No garantizan recuperación de un fallo
+del kernel, de alimentación o del almacenamiento físico. La cuarentena persistida
+usa reloj civil para caducar; los plazos de reproducción usan reloj monotónico.
+
 `viewer.collage` distingue `plan-requested`, `plan-ready`, `lookahead-ready`,
 `preload-ready`, `preload-used`, `round-adopted`, `scene-committed`, selecciones
 manuales, historial, cancelaciones, reposo, checkpoint y fallbacks. Cada evento
@@ -252,3 +289,9 @@ el worker. No conecta al marco ni a la central. Las pruebas unitarias cubren ade
 galería, historial, actualización de biblioteca, fallos, callbacks tardíos,
 timeouts, checkpoint, límites de selección y entrega de trazas. Las mediciones
 de escritorio no acreditan por sí solas el rendimiento de la Raspberry.
+
+También induce en Chromium un `seeking` sin fin y una corriente de eventos
+`playing` con avance insuficiente: exige salto automático y distingue recuperación rápida
+del vencimiento total. Verifica que los finales normales no generen falsas
+cuarentenas. El servidor de prueba retiene explícitamente la descarga siguiente
+para comprobar la unión a precarga sin depender de la velocidad de la máquina.

@@ -54,6 +54,7 @@ import {
 } from './core/photo-zoom';
 import { adjacentIndex, orderManifestMedia } from './core/slideshow-policy';
 import { PhotoReserve } from './core/photo-reserve';
+import { SceneLease } from './core/scene-lease';
 import {
   MediaFailureRegistry,
 } from './core/navigation-policy';
@@ -516,10 +517,13 @@ export class App implements OnDestroy {
   private photoGesture: PhotoGestureState | null = null;
   private suppressNavigationUntilPointersClear = false;
   private photoTimerInteractionMediaId: string | null = null;
+  private photoInteractionStartedAt: number | null = null;
   private photoTimer: number | undefined;
   private photoTimerGeneration = 0;
   private crossfadeTimer: number | undefined;
   private navigationRetryTimer: number | undefined;
+  private navigationRetryAt: number | null = null;
+  private navigationRetryDelay = 0;
   private videoWatchdogTimer: number | undefined;
   private pausedVideoAdvanceTimer: number | undefined;
   private videoSessionGeneration = 0;
@@ -529,6 +533,8 @@ export class App implements OnDestroy {
   private videoLastObservedTime = 0;
   private videoRecoveryAttempts = 0;
   private videoRecoveryResumeAt: number | null = null;
+  private sceneLease: SceneLease | null = null;
+  private leaseSequence = 0;
   private readonly videoFailureCounts = new Map<string, number>();
   private readonly quarantinedVideos = new Map<string, number>();
   private readonly unavailableMedia = new MediaFailureRegistry(MEDIA_QUARANTINE_MS);
@@ -560,11 +566,27 @@ export class App implements OnDestroy {
   private readonly videosPausedInternally = new WeakSet<HTMLVideoElement>();
 
   constructor() {
+    this.restoreVideoExclusions();
+    this.subscriptions.add(timer(500, 500).subscribe(() => this.checkSceneLease()));
     afterNextRender(() => this.runtimeRendered.set(true));
     this.subscriptions.add(timer(3_000, 3_000).subscribe(() => { this.warmCollage(); void this.preloadCollage(); }));
     this.subscriptions.add(timer(0, 1_000).pipe(
       switchMap(() => this.agent.getRuntimeControl().pipe(catchError(() => of(null)))),
     ).subscribe((control) => {
+      for (const entry of control?.playbackExclusions ?? []) {
+        if (entry.until > Date.now()) this.quarantinedVideos.set(`${entry.mediaId}:${entry.sha256}`, entry.until);
+      }
+      const current = this.currentMedia();
+      const externallyBlocked = current?.kind === 'video' && this.isVideoQuarantined(current);
+      if (this.sceneLease && !this.sceneLease.expired &&
+        (externallyBlocked || control?.playbackSafety?.healthy === false && control.playbackSafety.leaseId === this.sceneLease.id) &&
+        !this.reposeActive() && !this.overlayOpen() && !this.preparingTransition() && !this.crossfade()) {
+        this.sceneLease.expired = true;
+        const item = this.currentMedia();
+        if (item?.kind === 'video' && control?.playbackSafety?.reason !== 'pause-budget-expired') this.excludeVideo(item);
+        this.collageTrace.emit('scene-budget-expired', { reason: 'agent-safety', operationId: this.leaseSequence });
+        this.navigate(1, undefined, 'system');
+      }
       if (!control?.quiesceId || this.quiescedFor === control.quiesceId) return;
       this.runtimeQuiesced.set(true);
       this.enterRepose();
@@ -1428,6 +1450,7 @@ export class App implements OnDestroy {
     );
     if (restoresUserPause && checkpoint) {
       if (checkpoint.currentTime > 0) {
+        this.sceneLease?.seek(performance.now(), Math.min(checkpoint.currentTime, Math.max(0, video.duration - 0.1)));
         video.currentTime = Math.min(checkpoint.currentTime, Math.max(0, video.duration - 0.1));
       }
       this.restoredVideoCheckpointKey = checkpointKey;
@@ -1463,7 +1486,7 @@ export class App implements OnDestroy {
 
   protected onVideoEnded(video: HTMLVideoElement, mediaId: string): void {
     if (!this.isCurrentStableVideo(video, mediaId)) return;
-    if (video && this.videoRecoveryAttempts > 0) {
+    if (video && this.videoRecoveryResumeAt !== null) {
       this.markVideoRecoverySucceeded(video, mediaId);
     } else {
       this.markVideoHealthy(mediaId);
@@ -1477,6 +1500,9 @@ export class App implements OnDestroy {
       return;
     }
     if (this.isCurrentStableVideo(video, mediaId)) {
+      const resumed = this.sceneLease?.snapshot(performance.now()).pauseRemainingMs != null;
+      this.sceneLease?.play(performance.now());
+      if (resumed) this.traceSceneBudget('play');
       this.clearPausedVideoAdvance();
       this.videoPaused.set(false);
       this.videoPlaybackState.set('playing');
@@ -1488,6 +1514,7 @@ export class App implements OnDestroy {
   }
 
   protected onVideoPause(video: HTMLVideoElement, mediaId: string): void {
+    if (this.sceneLease?.expired) return;
     if (video !== this.currentVideoElement() || video.closest('.stage--staging')) return;
     if (this.currentMedia()?.id !== mediaId || this.preparingTransition() || this.crossfade()) {
       return;
@@ -1506,6 +1533,7 @@ export class App implements OnDestroy {
       this.videoPlaybackState() === 'recovering' ||
       this.videoPlaybackState() === 'loading'
     ) {
+      this.armVideoWatchdog(video, mediaId, VIDEO_START_TIMEOUT_MS, 'technical-pause-timeout');
       return;
     } else {
       this.videoPaused.set(true);
@@ -1520,11 +1548,11 @@ export class App implements OnDestroy {
     if (video !== this.currentVideoElement() || video.closest('.stage--staging')) return;
     if (this.currentMedia()?.id === mediaId && !this.crossfade()) {
       this.updateVideoProgress(video);
-      this.noteVideoProgress(video);
+      if (!video.seeking) this.noteVideoProgress(video);
       if (
         this.videoRecoveryAttempts > 0 &&
         this.videoRecoveryResumeAt !== null &&
-        video.currentTime >= this.videoRecoveryResumeAt + 0.5
+        !video.seeking && video.currentTime >= this.videoRecoveryResumeAt + 0.5
       ) {
         this.markVideoRecoverySucceeded(video, mediaId);
       }
@@ -1536,6 +1564,7 @@ export class App implements OnDestroy {
       this.currentMedia()?.id === mediaId &&
       !this.crossfade() &&
       !this.overlayOpen() &&
+      !video.seeking &&
       !video.paused &&
       !this.videoPaused()
     ) {
@@ -1558,8 +1587,8 @@ export class App implements OnDestroy {
 
   protected onVideoSeeking(video: HTMLVideoElement, mediaId: string): void {
     if (!this.isCurrentStableVideo(video, mediaId)) return;
-    this.clearVideoWatchdog();
     this.videoPlaybackState.set('loading');
+    this.armVideoWatchdog(video, mediaId, VIDEO_START_TIMEOUT_MS, 'seek-timeout');
   }
 
   protected onVideoSeeked(video: HTMLVideoElement, mediaId: string): void {
@@ -1599,6 +1628,7 @@ export class App implements OnDestroy {
       return;
     }
     if (video.paused) {
+      this.sceneLease?.play(performance.now());
       this.clearPausedVideoAdvance();
       const mediaId = this.currentMedia()?.id;
       if (mediaId) this.attemptVideoPlay(video, mediaId);
@@ -1620,6 +1650,8 @@ export class App implements OnDestroy {
       return;
     }
     const duration = Number.isFinite(video.duration) ? video.duration : requestedTime;
+    this.sceneLease?.seek(performance.now(), Math.min(Math.max(0, requestedTime), duration));
+    this.traceSceneBudget('seek');
     video.currentTime = Math.min(Math.max(0, requestedTime), duration);
     this.updateVideoProgress(video);
     this.noteVideoProgress(video, true);
@@ -1817,6 +1849,7 @@ export class App implements OnDestroy {
       return;
     }
     this.photoTimerInteractionMediaId = current.id;
+    this.photoInteractionStartedAt ??= performance.now();
     this.clearPhotoTimer();
   }
 
@@ -1825,6 +1858,7 @@ export class App implements OnDestroy {
       return;
     }
     const mediaId = this.photoTimerInteractionMediaId;
+    this.photoInteractionStartedAt = null;
     this.photoTimerInteractionMediaId = null;
     if (mediaId) {
       this.restartPhotoTimerForInteraction(mediaId);
@@ -1875,6 +1909,7 @@ export class App implements OnDestroy {
   }
 
   private clearViewerPointers(): void {
+    this.photoInteractionStartedAt = null;
     this.pointerStart = null;
     this.activePointers.clear();
     this.photoGesture = null;
@@ -1887,6 +1922,7 @@ export class App implements OnDestroy {
   }
 
   private openOverlay(view: Exclude<AppView, 'viewer'>): void {
+    this.suspendSceneLease(true);
     if (this.activeView() === 'viewer') {
       this.cancelNavigation();
       this.cancelCrossfade();
@@ -2290,6 +2326,7 @@ export class App implements OnDestroy {
           if (onlyVideo && (onlyVideo.ended || onlyVideo.currentTime > 0)) {
             onlyVideo.currentTime = 0;
           }
+          this.startSceneLease(outgoing);
           this.finishNavigationPreparation(generation);
           this.unavailableMedia.clear(candidate.item);
           this.resumeCurrentCycle();
@@ -2407,6 +2444,7 @@ export class App implements OnDestroy {
     }
     this.currentIndex.set(target.index);
     this.committedScene.set(target.scene);
+    this.startSceneLease(target.item);
     this.collageCycle.commit(target);
     this.collagePreloadAttemptKey = null;
     this.staging.set(null);
@@ -2423,6 +2461,7 @@ export class App implements OnDestroy {
   }
 
   private commitEmptyManifest(manifest: FrameManifest): void {
+    this.sceneLease = null;
     this.collageCycle.reset();
     this.cancelNavigation();
     this.cancelCrossfade();
@@ -2529,6 +2568,8 @@ export class App implements OnDestroy {
 
   private scheduleNavigationRetry(direction: -1 | 1, delayMs: number): void {
     this.clearNavigationRetry();
+    this.navigationRetryAt = performance.now();
+    this.navigationRetryDelay = delayMs;
     this.navigationRetryTimer = window.setTimeout(() => {
       this.navigationRetryTimer = undefined;
       this.navigate(direction, undefined, 'system');
@@ -2536,6 +2577,7 @@ export class App implements OnDestroy {
   }
 
   private clearNavigationRetry(): void {
+    this.navigationRetryAt = null;
     if (this.navigationRetryTimer !== undefined) {
       window.clearTimeout(this.navigationRetryTimer);
       this.navigationRetryTimer = undefined;
@@ -2638,6 +2680,7 @@ export class App implements OnDestroy {
     }
     this.currentIndex.set(transition.target.index);
     this.committedScene.set(transition.target.scene);
+    this.startSceneLease(transition.target.item);
     this.collageCycle.commit(transition.target);
     this.collagePreloadAttemptKey = null;
     this.crossfade.set(null);
@@ -2741,12 +2784,7 @@ export class App implements OnDestroy {
         this.completeVideo(mediaId);
         return;
       }
-      if (video.seeking) {
-        this.noteVideoProgress(video, true);
-        this.armVideoWatchdog(video, mediaId, timeoutMs, reason);
-        return;
-      }
-      if (this.noteVideoProgress(video)) {
+      if (!video.seeking && this.noteVideoProgress(video)) {
         this.videoPlaybackState.set('playing');
         this.armVideoWatchdog(video, mediaId, VIDEO_STALL_TIMEOUT_MS);
         return;
@@ -2758,7 +2796,7 @@ export class App implements OnDestroy {
   private recoverOrSkipVideo(video: HTMLVideoElement, mediaId: string, reason: string): void {
     if (!this.isCurrentStableVideo(video, mediaId)) return;
     this.clearVideoWatchdog();
-    if (this.videoRecoveryAttempts < VIDEO_MAX_RECOVERY_ATTEMPTS) {
+    if (this.videoRecoveryAttempts < VIDEO_MAX_RECOVERY_ATTEMPTS && this.sceneLease?.takeRecovery()) {
       this.videoRecoveryAttempts += 1;
       this.videoPlaybackState.set('recovering');
       this.reportPlaybackEvent('viewer.playback.recovery', video, mediaId, reason);
@@ -2788,6 +2826,7 @@ export class App implements OnDestroy {
     }
     this.videoPlaybackState.set('error');
     this.reportPlaybackEvent('viewer.playback.skipped', video, mediaId, reason);
+    if (item) this.excludeVideo(item);
     this.completeVideo(mediaId);
   }
 
@@ -2811,9 +2850,7 @@ export class App implements OnDestroy {
 
   private markVideoRecoverySucceeded(video: HTMLVideoElement, mediaId: string): void {
     this.reportPlaybackEvent('viewer.playback.recovered', video, mediaId, 'progress-restored');
-    this.videoRecoveryAttempts = 0;
     this.videoRecoveryResumeAt = null;
-    this.markVideoHealthy(mediaId);
   }
 
   private markVideoHealthy(mediaId: string): void {
@@ -2825,6 +2862,9 @@ export class App implements OnDestroy {
   }
 
   private schedulePausedVideoAdvance(mediaId: string): void {
+    const newlyPaused = this.sceneLease?.snapshot(performance.now()).pauseRemainingMs === null;
+    this.sceneLease?.pause(performance.now(), this.settings().photoDurationSeconds);
+    if (newlyPaused) this.traceSceneBudget('pause');
     this.clearPausedVideoAdvance();
     const durationMs = this.settings().photoDurationSeconds * 1_000;
     this.scheduleCollagePreload();
@@ -2851,6 +2891,7 @@ export class App implements OnDestroy {
   }
 
   private updateVideoProgress(video: HTMLVideoElement): void {
+    if (!video.seeking) this.sceneLease?.progress(video.currentTime);
     this.videoCurrentTime.set(Number.isFinite(video.currentTime) ? video.currentTime : 0);
     this.videoDuration.set(Number.isFinite(video.duration) ? video.duration : 0);
     if (!video.paused && Number.isFinite(video.duration) && video.duration - video.currentTime <= 5 &&
@@ -2871,6 +2912,7 @@ export class App implements OnDestroy {
       return;
     }
     const generation = this.photoTimerGeneration;
+    this.sceneLease?.restartPhoto(performance.now(), duration);
     const mediaId = media.id;
     this.scheduleCollagePreload();
     this.photoTimer = window.setTimeout(() => {
@@ -2914,6 +2956,15 @@ export class App implements OnDestroy {
 
   private resumeCurrentCycle(): void {
     if (this.reposeActive()) return;
+    this.suspendSceneLease(false);
+    if (this.sceneLease?.expired || (this.currentMedia()?.kind === 'video' && this.isVideoQuarantined(this.currentMedia()!))) {
+      this.navigationFailures = Math.max(1, this.navigationFailures);
+      this.videoPlaybackState.set('error');
+      this.currentVideoElement()?.pause();
+      this.connectionWarning.set('No hay otro medio disponible. Reintentando…');
+      this.scheduleNavigationRetry(1, NAVIGATION_RETRY_DELAY_MS);
+      return;
+    }
     if (this.sceneRefreshId && !this.overlayOpen()) {
       const preferred = this.sceneRefreshId;
       this.sceneRefreshId = undefined;
@@ -3058,6 +3109,7 @@ export class App implements OnDestroy {
   }
 
   private attemptVideoPlay(video: HTMLVideoElement, mediaId: string): void {
+    this.sceneLease?.play(performance.now());
     this.beginVideoSession(video, mediaId);
     this.videoPlaybackState.set(this.videoRecoveryAttempts > 0 ? 'recovering' : 'loading');
     this.videoPaused.set(false);
@@ -3086,6 +3138,7 @@ export class App implements OnDestroy {
     const current = this.currentMedia();
     return (
       current?.kind === 'video' &&
+      !this.sceneLease?.expired &&
       current.id === mediaId &&
       video.dataset['mediaKey'] === this.mediaIdentity(current) &&
       video === this.currentVideoElement() &&
@@ -3101,6 +3154,86 @@ export class App implements OnDestroy {
     return `${item.id}:${item.sha256}`;
   }
 
+  private startSceneLease(item: MediaItem): void {
+    const seconds = item.kind === 'video'
+      ? (Number.isFinite(item.durationSeconds) && Number(item.durationSeconds) > 0
+        ? Math.min(122, Number(item.durationSeconds)) : 120)
+      : this.settings().photoDurationSeconds;
+    this.sceneLease = new SceneLease(`${this.runtimeSessionId}:${++this.leaseSequence}`,
+      seconds, item.kind === 'video', performance.now());
+    this.collageTrace.emit('scene-budget-started', { mediaIds: [item.id],
+      budgetMs: seconds * 1000 + (item.kind === 'video' ? 20_000 : 1000),
+      operationId: this.leaseSequence });
+  }
+
+  private traceSceneBudget(reason: string): void {
+    const state = this.sceneLease?.snapshot(performance.now());
+    if (state) this.collageTrace.emit('scene-budget-adjusted', { reason,
+      operationId: this.leaseSequence, elapsedMs: state.elapsedMs, budgetMs: state.budgetMs });
+  }
+
+  private suspendSceneLease(suspended: boolean): void {
+    const lease = this.sceneLease;
+    if (!lease) return;
+    const now = performance.now(), previous = lease.snapshot(now).suspended;
+    lease.update(now, suspended);
+    if (previous !== suspended) this.collageTrace.emit('scene-budget-suspension', {
+      reason: suspended ? 'suspended' : 'resumed', operationId: this.leaseSequence,
+      elapsedMs: lease.snapshot(now).elapsedMs, budgetMs: lease.snapshot(now).budgetMs });
+  }
+
+  private checkSceneLease(): void {
+    const lease = this.sceneLease, item = this.currentMedia();
+    if (!lease || !item) return;
+    if (item.kind === 'photo' && this.activePointers.size > 0 && this.photoInteractionStartedAt !== null &&
+      performance.now() - this.photoInteractionStartedAt >= 30_000) {
+      this.clearViewerPointers();
+      this.schedulePhotoAdvance(item, this.settings().photoDurationSeconds);
+    }
+    const suspended = this.reposeActive() || this.overlayOpen() || this.runtimeQuiesced() ||
+      this.preparingTransition() || this.crossfade() !== null ||
+      (item.kind === 'photo' && this.activePointers.size > 0);
+    const now = performance.now();
+    this.suspendSceneLease(suspended);
+    const video = item.kind === 'video' ? this.currentVideoElement() : null;
+    if (!suspended && !lease.expired && video && this.videoReachedEnd(video)) {
+      this.completeVideo(item.id);
+      return;
+    }
+    if (lease.expired || !lease.due(now)) return;
+    const pauseExpired = lease.snapshot(now).pauseRemainingMs !== null;
+    lease.expired = true;
+    this.collageTrace.emit('scene-budget-expired', { mediaIds: [item.id],
+      operationId: this.leaseSequence, elapsedMs: lease.snapshot(now).elapsedMs,
+      budgetMs: lease.snapshot(now).budgetMs });
+    if (item.kind === 'video' && !pauseExpired && !this.videoPaused()) {
+      this.excludeVideo(item);
+      if (video) this.reportPlaybackEvent('viewer.playback.skipped', video, item.id, 'scene-budget-expired');
+      else this.reportPreparationFailure(item, new Error('scene-budget-expired: missing video element'));
+    }
+    this.navigate(1, undefined, 'system');
+  }
+
+  private excludeVideo(item: MediaItem): void {
+    this.quarantinedVideos.set(this.videoQuarantineKey(item), Date.now() + VIDEO_QUARANTINE_MS);
+    const entries = [...this.quarantinedVideos].filter(([, until]) => until > Date.now()).slice(-128);
+    try { window.localStorage.setItem('naiskos.video-exclusions.v1', JSON.stringify(entries)); }
+    catch { /* Agent protection remains available if browser storage is full. */ }
+  }
+
+  private restoreVideoExclusions(): void {
+    try {
+      const entries: unknown = JSON.parse(window.localStorage.getItem('naiskos.video-exclusions.v1') ?? '[]');
+      if (!Array.isArray(entries)) return;
+      for (const entry of entries.slice(-128)) {
+        if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[0].length <= 200 &&
+          typeof entry[1] === 'number' && entry[1] > Date.now()) {
+          this.quarantinedVideos.set(entry[0], Math.min(entry[1], Date.now() + VIDEO_QUARANTINE_MS));
+        }
+      }
+    } catch { /* A malformed checkpoint must not prevent playback. */ }
+  }
+
   private isVideoQuarantined(item: MediaItem): boolean {
     const key = this.videoQuarantineKey(item);
     const until = this.quarantinedVideos.get(key);
@@ -3114,6 +3247,7 @@ export class App implements OnDestroy {
     const media = this.currentMedia();
     const video = media?.kind === 'video' ? this.currentVideoElement() : null;
     return {
+      ...(this.sceneLease ? { lease: this.sceneLease.snapshot(performance.now()) } : {}),
       buildId: VIEWER_BUILD_ID,
       sessionId: this.runtimeSessionId,
       quiescedFor: this.quiescedFor,
@@ -3167,12 +3301,12 @@ export class App implements OnDestroy {
       };
     }
     return {
-      phase: this.navigationFailures > 0 ? 'degraded' : 'stable',
-      operationId: null,
+      phase: this.navigationRetryAt !== null || this.navigationFailures > 0 ? 'degraded' : 'stable',
+      operationId: this.navigationRetryAt !== null ? this.navigationGeneration : null,
       candidateMediaId: null,
       candidateMediaSha256: null,
-      phaseElapsedMs: 0,
-      deadlineMs: null,
+      phaseElapsedMs: this.navigationRetryAt === null ? 0 : Math.max(0, performance.now() - this.navigationRetryAt),
+      deadlineMs: this.navigationRetryAt === null ? null : this.navigationRetryDelay,
       failuresInOperation: this.navigationFailures,
     };
   }
@@ -3255,6 +3389,7 @@ export class App implements OnDestroy {
   }
 
   private enterRepose(): void {
+    this.suspendSceneLease(true);
     this.collageCycle.suspend();
     const media = this.currentMedia();
     const video = this.currentVideoElement();
@@ -3284,6 +3419,7 @@ export class App implements OnDestroy {
   }
 
   private leaveRepose(deferVideoResume = true): void {
+    this.suspendSceneLease(false);
     this.collageCycle.resume();
     this.hideReposeMenu();
     if (this.pendingManifest()) {

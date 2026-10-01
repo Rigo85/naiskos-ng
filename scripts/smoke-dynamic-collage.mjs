@@ -28,6 +28,17 @@ manifest.media[5] = { ...manifest.media[5], kind: 'video', url: '/sample/test.mp
 const repose = { schemaVersion: 1, active: false, source: null, enteredAt: null,
   updatedAt: new Date().toISOString(), overrideUntil: null, schedule: { from: '23:30', until: '07:00' } };
 let brokenImage = false, chrome, ws, slowPhotosMs = 0;
+let holdSlow = false;
+const allowedSlow = new Set(), slowWaiters = new Map();
+const releaseSlow = (url) => {
+  allowedSlow.add(url);
+  for (const resolve of slowWaiters.get(url) ?? []) resolve();
+  slowWaiters.delete(url);
+};
+const releaseAllSlow = () => {
+  holdSlow = false;
+  for (const url of [...slowWaiters.keys()]) releaseSlow(url);
+};
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost').pathname;
@@ -65,6 +76,12 @@ const server = createServer(async (req, res) => {
     }
     if (url.startsWith('/sample/')) {
       if (brokenImage && url === '/sample/broken-17.svg') { res.writeHead(404); res.end(); return; }
+      if (holdSlow && url.startsWith('/sample/slow-') && !allowedSlow.has(url)) {
+        await new Promise(resolve => {
+          const waiters = slowWaiters.get(url) ?? [];
+          waiters.push(resolve); slowWaiters.set(url, waiters);
+        });
+      }
       if (slowPhotosMs) await delay(slowPhotosMs);
       res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
       res.end('<svg xmlns="http://www.w3.org/2000/svg" width="670" height="1000"><rect width="670" height="1000" fill="#507f9c"/></svg>'); return;
@@ -110,7 +127,11 @@ try {
     } else if (msg.method === 'Runtime.exceptionThrown') browserExceptions.push(msg.params.exceptionDetails);
   });
   const call = (method, params = {}) => new Promise((resolve, reject) => {
-    const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params }));
+    const id = ++sequence;
+    const timeout = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 20_000);
+    pending.set(id, { resolve: value => { clearTimeout(timeout); resolve(value); },
+      reject: error => { clearTimeout(timeout); reject(error); } });
+    ws.send(JSON.stringify({ id, method, params }));
   });
   const evaluate = async (expression) => {
     const result = await call('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
@@ -130,12 +151,20 @@ try {
   // advance while decode/download is pending must join rather than restart.
   const regularMedia = [...manifest.media];
   slowPhotosMs = 700;
+  holdSlow = true;
   manifest.settings.photoDurationSeconds = 30;
   manifest.settings.fadeDurationMs = 1000; // Wide controlled window for real input delivery.
   manifest.media = regularMedia.map((m, i) => ({ ...m, kind: 'photo',
     sha256: `slow-${i}`, url: `/sample/slow-${i}.svg`, posterUrl: null }));
   manifest.version++;
   const slowVersion = manifest.version;
+  // Release only the first staged scene; keep its successor genuinely pending
+  // until the manual advance joins it (independent of decode/cache timing).
+  const firstSlow = await waitFor(async () => {
+    const urls = await evaluate(`Array.from(document.querySelectorAll('.stage--staging img[src^="/sample/slow-"]')).map(i=>new URL(i.src).pathname)`);
+    return urls.length ? urls : null;
+  });
+  firstSlow.forEach(releaseSlow);
   await waitFor(() => events.some((e) => e.action === 'scene-committed' && e.details.manifestVersion === slowVersion));
   // Planner traces can already refer to the new manifest while an older scene
   // is finishing. Wait for actual slow media on screen, not just its trace.
@@ -144,6 +173,7 @@ try {
   await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1000, y: 350, button: 'left', clickCount: 1 });
   await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1000, y: 350, button: 'left', clickCount: 1 });
   await waitFor(() => events.some((e) => e.action === 'preload-joined'), 5_000);
+  releaseAllSlow();
   await waitFor(() => evaluate(`!!document.querySelector('.stage--incoming')`), 5_000);
   await delay(360); // Separate intentional tap, not the second half of a double tap.
   await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1000, y: 350, button: 'left', clickCount: 1 });
@@ -178,6 +208,46 @@ try {
   await waitFor(() => errors.length > 0);
   const before = events.filter((e) => e.action === 'scene-committed').length;
   await waitFor(() => events.filter((e) => e.action === 'scene-committed').length >= before + 2);
+  assert.equal(playbackErrors.length, 0, JSON.stringify(playbackErrors));
+  // Inject a real DOM stall, not a real corrupt personal file. The browser keeps
+  // responding while seeking never ends; then simulate tiny apparent progress
+  // which keeps the fast watchdog happy but must not renew the total budget.
+  const faultResults = [];
+  for (const mode of ['seeking', 'total-budget']) {
+    const id = `fault-${mode}`;
+    manifest.settings.collageMode = mode === 'seeking' ? 'columns' : 'off';
+    manifest.settings.order = 'newest';
+    manifest.settings.photoDurationSeconds = 1;
+    manifest.settings.fadeDurationMs = 50;
+    manifest.media = [{...regularMedia[5],id,sha256:id,durationSeconds:5,receivedAt:'2026-12-01T00:00:00Z'},
+      ...Array.from({length:mode === 'seeking' ? 5 : 1},(_,i)=>({...regularMedia[i],
+        id:`after-${mode}-${i}`,sha256:`after-${mode}-${i}`}))];
+    manifest.version++;
+    await waitFor(() => evaluate(`!!document.querySelector('.stage--stable video[data-media-id="${id}"]')`), 45_000);
+    if (mode === 'seeking') assert(await evaluate(`document.querySelectorAll('.stage--stable img').length >= 1`));
+    const started = Date.now();
+    await evaluate(`(() => {
+      const video=document.querySelector('.stage--stable video');
+      video.pause();
+      const src=video.src;
+      let position=${mode === 'seeking' ? 63.589997 : 0};
+      Object.defineProperties(video,{currentTime:{configurable:true,get:()=>position,set:()=>{}},
+        src:{configurable:true,get:()=>src,set:()=>{}},
+        duration:{configurable:true,value:63.914},seeking:{configurable:true,value:${mode === 'seeking'}},
+        readyState:{configurable:true,value:1},paused:{configurable:true,value:false},ended:{configurable:true,value:false}});
+      video.play=()=>new Promise(()=>{});video.load=()=>{};
+      video.dispatchEvent(new Event('playing'));video.dispatchEvent(new Event('seeking'));
+      ${mode === 'total-budget' ? "window.faultNoise=setInterval(()=>{position+=.25;video.dispatchEvent(new Event('timeupdate'));video.dispatchEvent(new Event('playing'));},500);" : ''}
+    })()`);
+    await waitFor(() => playbackErrors.some(e=>e.type==='viewer.playback.skipped' && e.mediaId===id), 32_000);
+    await waitFor(() => evaluate(`!document.querySelector('.stage--stable video') && !!document.querySelector('.stage--stable img')`), 8_000);
+    await evaluate('clearInterval(window.faultNoise)');
+    const skipped = playbackErrors.find(e=>e.type==='viewer.playback.skipped' && e.mediaId===id);
+    assert.equal(skipped.reason, mode === 'total-budget' ? 'scene-budget-expired' : 'recovery-timeout');
+    assert.equal(playbackErrors.filter(e=>e.type==='viewer.playback.recovery' && e.mediaId===id).length,
+      mode === 'total-budget' ? 0 : 1);
+    faultResults.push({mode,elapsedMs:Date.now()-started,reason:skipped.reason});
+  }
   // Execute the shipped worker with a production-sized synthetic library.
   const workerFile = (await readdir(root)).find((name) => /^worker-.*\.js$/.test(name));
   assert(workerFile);
@@ -195,7 +265,7 @@ try {
   })`);
   assert.equal(benchmark.materials, 2300); assert(benchmark.mainThreadTicks > 0); assert(!benchmark.error);
   assert.equal(browserExceptions.length, 0, JSON.stringify(browserExceptions));
-  assert.equal(playbackErrors.length, 0, JSON.stringify(playbackErrors));
+  assert.equal(playbackErrors.length, 3, JSON.stringify(playbackErrors));
   console.log(JSON.stringify({ ok: true, rounds: events.filter((e) => e.action === 'round-adopted').length,
     precacheHits: events.filter((e) => e.action === 'preload-used').length, recoveredMediaFailures: errors.length,
     joinedPreloads: events.filter((e) => e.action === 'preload-joined').length,
@@ -203,11 +273,12 @@ try {
     manualLatenciesMs: events.filter((e) => e.action === 'navigation-visible' && e.details.source === 'manual').map((e) => e.details.elapsedMs),
     deferredUsed: events.filter((e) => e.action === 'navigation-deferred-used').length,
     joinedAutomatic: events.filter((e) => e.action === 'navigation-joined').length,
-    heartbeatCount: beats.length, videoRecoveries: playbackErrors.length, benchmark }, null, 2));
+    heartbeatCount: beats.length, faultResults, videoRecoveries: playbackErrors.filter(e=>e.type==='viewer.playback.recovery').length, benchmark }, null, 2));
 } catch (error) {
   console.error(JSON.stringify({ lastEvents: events.slice(-20), errors, playbackErrors }));
   throw error;
 } finally {
+  releaseAllSlow();
   ws?.close();
   if (chrome && chrome.exitCode === null) {
     chrome.kill('SIGTERM');

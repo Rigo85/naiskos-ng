@@ -30,7 +30,9 @@ export class AgentApi {
     return this.http.get<FrameManifest>(`${this.baseUrl}/manifest`);
   }
 
-  getRuntimeControl(): Observable<{ quiesceId: string | null }> {
+  getRuntimeControl(): Observable<{ quiesceId: string | null;
+    playbackSafety?: { healthy: boolean; reason: string | null; leaseId?: string };
+    playbackExclusions?: { mediaId: string; sha256: string; until: number }[] }> {
     return this.http.get<{ quiesceId: string | null }>(`${this.baseUrl}/viewer/runtime`);
   }
 

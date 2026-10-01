@@ -53,6 +53,7 @@ import {
   pointMidpoint,
 } from './core/photo-zoom';
 import { adjacentIndex, orderManifestMedia } from './core/slideshow-policy';
+import { PhotoReserve } from './core/photo-reserve';
 import {
   MediaFailureRegistry,
 } from './core/navigation-policy';
@@ -521,7 +522,12 @@ export class App implements OnDestroy {
   private readonly quarantinedVideos = new Map<string, number>();
   private readonly unavailableMedia = new MediaFailureRegistry(MEDIA_QUARANTINE_MS);
   private navigationGeneration = 0;
-  private collagePreload: { target: SceneCandidate | null; ready: boolean } | null = null;
+  private collagePreload: { target: SceneCandidate | null; ready: boolean; sourceKey: string;
+    done: Promise<void>; startedAt: number } | null = null;
+  private readonly photoReserve = new PhotoReserve();
+  private reserveDirection: -1 | 1 = 1;
+  private manualNavigationAt: number | null = null;
+  private navigationIntent: { direction: -1 | 1; preferred?: string } | null = null;
   private collagePreloadTimer: number | undefined;
   private collagePreloadAttemptKey: string | null = null;
   private stagingAttempt: StagingAttempt | null = null;
@@ -544,7 +550,7 @@ export class App implements OnDestroy {
 
   constructor() {
     afterNextRender(() => this.runtimeRendered.set(true));
-    this.subscriptions.add(timer(3_000, 3_000).subscribe(() => this.warmCollage()));
+    this.subscriptions.add(timer(3_000, 3_000).subscribe(() => { this.warmCollage(); void this.preloadCollage(); }));
     this.subscriptions.add(timer(0, 1_000).pipe(
       switchMap(() => this.agent.getRuntimeControl().pipe(catchError(() => of(null)))),
     ).subscribe((control) => {
@@ -837,6 +843,8 @@ export class App implements OnDestroy {
       at: event.timeStamp,
     };
     const action = classifyGesture(start, end, bounds.width);
+    this.collageTrace.emit('input-classified', { reason: action,
+      elapsedMs: Math.max(0, Math.round(end.at - start.at)) });
 
     if (action === 'open-settings') {
       this.abandonPhotoTimerInteraction();
@@ -867,6 +875,7 @@ export class App implements OnDestroy {
         this.navigate(side === 'left' ? -1 : 1, undefined, true);
         return;
       }
+      this.collageTrace.emit('navigation-ignored', { reason: 'double-tap' });
     }
     this.finishPhotoTimerInteraction();
   }
@@ -2038,49 +2047,46 @@ export class App implements OnDestroy {
   }
 
   private navigate(direction: -1 | 1, preferredMediaId?: string, replaceActive = false): void {
-    if (this.overlayOpen() || this.reposeActive()) return;
+    if (replaceActive) this.collageTrace.emit('navigation-requested', { reason: preferredMediaId ? 'gallery' : 'manual', direction });
+    if (this.overlayOpen() || this.reposeActive()) {
+      if (replaceActive) this.collageTrace.emit('navigation-ignored', { reason: 'overlay-or-repose', direction });
+      return;
+    }
     this.clearNavigationRetry();
     if (this.crossfade()) {
+      if (replaceActive) this.collageTrace.emit('navigation-ignored', { reason: 'crossfade', direction });
       return;
     }
     if (this.preparingTransition()) {
       if (!replaceActive) return;
-      this.cancelNavigation();
+      if (this.navigationIntent?.direction === direction && this.navigationIntent.preferred === preferredMediaId) {
+        this.collageTrace.emit('preload-joined', { operationId: this.navigationGeneration, reason: 'same-navigation' });
+        return;
+      }
+      // A repeated request for the same in-flight preload joins its original
+      // deadline rather than destroying the DOM/decode work.
+      if (!this.collagePreload) this.cancelNavigation();
     }
     const active = this.manifest();
     if (!active || !(this.pendingManifest()?.media.length || active.media.length)) return;
 
-    const preloaded = this.collagePreload;
-    const target = preloaded?.ready ? preloaded.target : null;
-    const expected = target && direction === 1 && !preferredMediaId ? this.navigationCandidates(1)[0] : null;
-    const reusable = target && expected && target.manifest === expected.manifest &&
-      target.cycle?.round === expected.cycle?.round && target.cycle?.seed === expected.cycle?.seed &&
-      target.scene.cells.length === expected.scene.cells.length && target.scene.cells.every((c, i) =>
-        this.mediaIdentity(c.item) === this.mediaIdentity(expected.scene.cells[i].item));
-    if (!reusable) this.cancelCollagePreload('navigation-changed');
-
+    if (replaceActive) this.manualNavigationAt = performance.now();
+    this.reserveDirection = direction;
+    this.navigationIntent = { direction, preferred: preferredMediaId };
     this.clearPhotoTimer();
     this.clearVideoMonitoring();
     this.clearPausedVideoAdvance();
     this.clearViewerPointers();
-    if (reusable && target && this.currentMedia()) {
-      this.collagePreload = null;
-      this.collageTrace.emit('preload-used', { mediaIds: target.scene.cells.map((c) => c.item.id),
-        round: target.cycle?.round ?? 0, operationId: this.navigationGeneration + 1 });
-      this.beginCrossfade(++this.navigationGeneration, this.currentMedia()!,
-        this.fitModeFor(this.currentMedia()!, active.settings), target);
-      return;
-    }
     void this.prepareAndStartCrossfade(direction, preferredMediaId);
   }
 
-  private scheduleCollagePreload(durationMs: number): void {
+  private scheduleCollagePreload(delayMs = 0): void {
     if (this.collagePreloadTimer !== undefined) window.clearTimeout(this.collagePreloadTimer);
     if (!this.collageEnabled()) return;
     this.collagePreloadTimer = window.setTimeout(() => {
       this.collagePreloadTimer = undefined;
       void this.preloadCollage();
-    }, Math.max(0, durationMs - 5_000));
+    }, delayMs);
   }
 
   private async preloadCollage(): Promise<void> {
@@ -2089,10 +2095,17 @@ export class App implements OnDestroy {
       this.preparingTransition() || this.crossfade() || this.collagePreload ||
       this.collagePreloadAttemptKey === current.key) return;
     this.collagePreloadAttemptKey = current.key;
-    const operation = { target: null as SceneCandidate | null, ready: false };
+    const operation = { target: null as SceneCandidate | null, ready: false, sourceKey: current.key,
+      done: Promise.resolve(), startedAt: performance.now() };
     this.collagePreload = operation;
+    operation.done = this.prepareCollagePreload(operation, current);
+    await operation.done;
+  }
+
+  private async prepareCollagePreload(operation: NonNullable<App['collagePreload']>, current: MediaScene): Promise<void> {
     try {
-      const next = this.navigationCandidates(1)[0];
+      const next = (await this.navigationCandidates(1, undefined, false))[0];
+      if (this.collagePreload !== operation) return;
       if (!next || next.scene.cells.some((c) => current.cells.some((v) => v.item.id === c.item.id))) {
         this.collagePreload = null;
         return;
@@ -2105,7 +2118,9 @@ export class App implements OnDestroy {
       if (this.collagePreload !== operation) return;
       operation.ready = true;
       this.collageTrace.emit('preload-ready', { mediaIds: target.scene.cells.map((c) => c.item.id),
-        round: target.cycle?.round ?? 0, operationId: this.navigationGeneration });
+        round: target.cycle?.round ?? 0, operationId: this.navigationGeneration,
+        elapsedMs: Math.round(performance.now() - operation.startedAt) });
+      void this.warmAuxiliary(operation);
     } catch (error) {
       if (this.collagePreload !== operation) return;
       this.collagePreload = null;
@@ -2115,16 +2130,31 @@ export class App implements OnDestroy {
       }
       this.discardStagingAttempt(new NavigationCancelledError('Precarga finalizada.'));
       this.collageTrace.emit('preload-failed', { reason: 'preparation-failed', operationId: this.navigationGeneration });
+      this.collagePreloadAttemptKey = null;
+      // Retry/recompose while current content continues, not at its deadline.
+      this.scheduleCollagePreload(error instanceof ScenePreparationError ? 0 : 5_000);
     }
   }
 
   private cancelCollagePreload(reason: string): void {
     if (this.collagePreloadTimer !== undefined) window.clearTimeout(this.collagePreloadTimer);
     this.collagePreloadTimer = undefined;
+    this.collagePreloadAttemptKey = null;
+    if (reason !== 'navigation-changed') this.photoReserve.clear();
     if (!this.collagePreload) return;
     this.collagePreload = null;
     this.discardStagingAttempt(new NavigationCancelledError('Precarga cancelada.'));
     this.collageTrace.emit('preload-cancelled', { reason, operationId: this.navigationGeneration });
+  }
+
+  private async warmAuxiliary(operation: NonNullable<App['collagePreload']>): Promise<void> {
+    const candidates = await this.navigationCandidates(this.reserveDirection, undefined, false);
+    if (this.collagePreload !== operation || this.reposeActive() || this.overlayOpen()) return;
+    const candidate = this.reserveDirection === -1 ? candidates[0] : candidates[1];
+    if (!candidate) { this.photoReserve.clear(); return; }
+    const result = await this.photoReserve.prepare(candidate.scene.cells.map((c) => c.item));
+    if (result !== 'unchanged' && this.collagePreload === operation) this.collageTrace.emit('reserve-ready', {
+      reason: result, mediaIds: candidate.scene.cells.map((c) => c.item.id), direction: this.reserveDirection });
   }
 
   private failReadyCollagePreload(mediaKey: string): boolean {
@@ -2134,6 +2164,7 @@ export class App implements OnDestroy {
     this.unavailableMedia.quarantine(item);
     this.reportPreparationFailure(item, new Error('Falló un medio ya precargado.'));
     this.cancelCollagePreload('prepared-media-failed');
+    this.scheduleCollagePreload(0);
     return true;
   }
 
@@ -2148,7 +2179,36 @@ export class App implements OnDestroy {
     const generation = ++this.navigationGeneration;
     const outgoingFitMode = outgoing ? this.fitModeFor(outgoing, active.settings) : null;
     this.preparingTransition.set(true);
-    const candidates = this.navigationCandidates(direction, preferredMediaId);
+    const plan = this.navigationCandidates(direction, preferredMediaId);
+    const candidates = Array.isArray(plan) ? plan : await plan;
+    if (generation !== this.navigationGeneration) return;
+    const preload = this.collagePreload;
+    if (preload && direction === 1 && !preferredMediaId && preload.sourceKey === this.currentScene()?.key) {
+      if (!preload.ready) this.collageTrace.emit('preload-joined', { operationId: generation });
+      await preload.done;
+      if (generation !== this.navigationGeneration) return;
+      const target = preload.target, expected = candidates[0];
+      if (this.collagePreload === preload && preload.ready && target && expected &&
+        target.manifest.frameId === expected.manifest.frameId &&
+        target.manifest.settings.collageMode === expected.manifest.settings.collageMode &&
+        target.manifest.settings.defaultFitMode === expected.manifest.settings.defaultFitMode &&
+        target.cycle?.fingerprint === expected.cycle?.fingerprint && target.cycle?.round === expected.cycle?.round &&
+        target.cycle?.seed === expected.cycle?.seed && target.historyIndex === expected.historyIndex &&
+        target.scene.cells.length === expected.scene.cells.length && target.scene.cells.every((c, i) =>
+          this.mediaIdentity(c.item) === this.mediaIdentity(expected.scene.cells[i].item) &&
+          c.item.url === expected.scene.cells[i].item.url && c.item.fitMode === expected.scene.cells[i].item.fitMode)) {
+        this.collagePreload = null;
+        this.collageTrace.emit('preload-used', { mediaIds: target.scene.cells.map((c) => c.item.id),
+          round: target.cycle?.round ?? 0, operationId: generation });
+        const refreshed = { ...target, manifest: expected.manifest, scene: { ...target.scene,
+          cells: target.scene.cells.map((c, i) => ({ ...c, item: expected.scene.cells[i].item })),
+          driver: expected.scene.driver } };
+        if (outgoing && outgoingFitMode) this.beginCrossfade(generation, outgoing, outgoingFitMode, refreshed);
+        else this.commitPreparedCandidate(generation, refreshed);
+        return;
+      }
+    }
+    if (this.collagePreload) this.cancelCollagePreload('navigation-changed');
     const searchStartedAt = performance.now();
     this.navigationFailures = 0;
     let attempted = 0;
@@ -2218,15 +2278,15 @@ export class App implements OnDestroy {
 
   private warmCollage(): void {
     if (this.collageEnabled() && !this.overlayOpen() && !this.reposeActive() &&
-      !this.preparingTransition() && !this.crossfade()) void this.collageCycle.warm(this.currentScene());
+      !this.preparingTransition() && !this.crossfade()) void this.collageCycle.warm(this.currentScene(), (m) => this.collageUnavailable(m));
   }
 
-  private navigationCandidates(direction: -1 | 1, preferredMediaId?: string): SceneCandidate[] {
+  private navigationCandidates(direction: -1 | 1, preferredMediaId?: string, traceSelection = true): SceneCandidate[] | Promise<SceneCandidate[]> {
     const active = this.manifest()!;
     const target = this.pendingManifest() ?? active;
     if ((target.settings.collageMode ?? 'off') !== 'off') return this.collageCycle.candidates(
       target, window.innerWidth / window.innerHeight, this.adaptiveMixSeed,
-      this.currentScene(), direction, preferredMediaId, (item) => this.collageUnavailable(item));
+      this.currentScene(), direction, preferredMediaId, (item) => this.collageUnavailable(item), traceSelection);
     this.collageCycle.reset();
     return sceneNavigationPlan({
       active,
@@ -2245,6 +2305,9 @@ export class App implements OnDestroy {
     target: SceneCandidate,
   ): Promise<void> {
     this.discardStagingAttempt(new NavigationCancelledError('Preparación sustituida.'));
+    if (this.photoReserve.has(target.scene.cells.map((c) => c.item))) {
+      this.collageTrace.emit('reserve-used', { mediaIds: target.scene.cells.map((c) => c.item.id), operationId });
+    }
     return new Promise<void>((resolve, reject) => {
       const timeout = window.setTimeout(
         () => {
@@ -2291,10 +2354,12 @@ export class App implements OnDestroy {
     this.collagePreloadAttemptKey = null;
     this.staging.set(null);
     this.preparingTransition.set(false);
+    this.navigationIntent = null;
     this.connectionWarning.set(null);
     this.videoPaused.set(false);
     this.persistPlaybackCheckpoint(true);
     this.warmCollage();
+    this.scheduleCollagePreload(0);
     if (target.item.kind === 'video') {
       window.setTimeout(() => this.playCurrentVideo(), 0);
     }
@@ -2363,6 +2428,11 @@ export class App implements OnDestroy {
     target: SceneCandidate,
   ): void {
     if (generation !== this.navigationGeneration) return;
+    if (this.manualNavigationAt !== null) {
+      this.collageTrace.emit('navigation-visible', { operationId: generation,
+        elapsedMs: Math.round(performance.now() - this.manualNavigationAt) });
+      this.manualNavigationAt = null;
+    }
     const outgoingVideo = this.currentVideoElement();
     if (outgoingVideo && !outgoingVideo.paused) outgoingVideo.pause();
     const durationMs = target.manifest.settings.fadeDurationMs;
@@ -2394,6 +2464,8 @@ export class App implements OnDestroy {
     this.navigationGeneration += 1;
     this.discardStagingAttempt(new NavigationCancelledError('Preparación cancelada.'));
     this.preparingTransition.set(false);
+    this.navigationIntent = null;
+    this.manualNavigationAt = null;
     this.clearNavigationRetry();
   }
 
@@ -2513,6 +2585,7 @@ export class App implements OnDestroy {
     this.videoPaused.set(false);
     this.persistPlaybackCheckpoint(true);
     this.warmCollage();
+    this.scheduleCollagePreload(0);
     if (this.currentMedia()?.kind === 'video') {
       window.setTimeout(() => this.playCurrentVideo(), 0);
     }
@@ -2685,7 +2758,7 @@ export class App implements OnDestroy {
   private schedulePausedVideoAdvance(mediaId: string): void {
     this.clearPausedVideoAdvance();
     const durationMs = this.settings().photoDurationSeconds * 1_000;
-    this.scheduleCollagePreload(durationMs);
+    this.scheduleCollagePreload();
     this.pausedVideoAdvanceTimer = window.setTimeout(() => {
       this.pausedVideoAdvanceTimer = undefined;
       if (
@@ -2730,7 +2803,7 @@ export class App implements OnDestroy {
     }
     const generation = this.photoTimerGeneration;
     const mediaId = media.id;
-    this.scheduleCollagePreload(duration * 1_000);
+    this.scheduleCollagePreload();
     this.photoTimer = window.setTimeout(() => {
       this.photoTimer = undefined;
       if (
@@ -2809,10 +2882,10 @@ export class App implements OnDestroy {
   }
 
   private replaceSettings(settings: FrameSettings): void {
-    this.cancelCollagePreload('settings-changed');
-    this.collagePreloadAttemptKey = null;
     const manifest = this.manifest();
     if (manifest) {
+      if (manifest.settings.order !== settings.order || manifest.settings.collageMode !== settings.collageMode ||
+        manifest.settings.defaultFitMode !== settings.defaultFitMode) this.cancelCollagePreload('settings-changed');
       const currentId = this.currentMedia()?.id;
       const next = this.orderManifest({ ...manifest, settings });
       const regroup = manifest.settings.order !== settings.order ||
@@ -2846,7 +2919,8 @@ export class App implements OnDestroy {
     }
     let scenes = this.sceneCache.get(manifest);
     if (!scenes) {
-      scenes = buildScenes(manifest.media, manifest.settings.collageMode ?? 'off',
+      // UI fallback is linear singles. Full layout reconciliation belongs to worker.
+      scenes = buildScenes(manifest.media, 'off',
         window.innerWidth / window.innerHeight, this.adaptiveMixSeed);
       this.sceneCache.set(manifest, scenes);
     }

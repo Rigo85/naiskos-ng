@@ -98,7 +98,11 @@ controles siguen visibles. Su final, pausa con temporizador, reproducción y
 recuperación gobiernan el avance de toda la escena. Reposo cancela la preparación
 pendiente y suspende el ciclo visible usando el mecanismo existente.
 
-Sólo se renderizan la escena visible y la candidata. Todos sus archivos deben
+Sólo se renderizan la escena visible y la candidata. Una reserva auxiliar fuera
+del DOM conserva hasta cuatro fotos/pósteres decodificados, con un presupuesto
+estimado de 32 MiB RGBA; no abre reproductores de video. Las dimensiones reales
+se comprueban después de decodificar; esto limita la reserva, no toda la memoria
+de Chromium ni una asignación transitoria de su decodificador. Todos los archivos de la candidata deben
 cargar antes del crossfade. Un archivo fallido se identifica, se notifica al
 agente y se retira temporalmente; se intenta preparar el resto de esa escena.
 Si no queda ninguno, continúa la búsqueda existente, con sus límites y reintentos.
@@ -137,15 +141,34 @@ Instalar mediante el mecanismo normal de releases firmadas.
 - Un único worker recibe metadatos mínimos, sin URLs, nombres, leyendas ni píxeles.
   Calcula la próxima vuelta tras una escena estable. Mantiene un plan activo y
   uno preparado, no un historial ilimitado de planes.
+- La reconciliación inicial y por cambios de biblioteca también usa el worker,
+  con un máximo de dos segundos. Si no responde, se conserva capacidad de mostrar
+  medios individuales mediante un fallback lineal; no se calcula geometría en la
+  interfaz. Los resultados cancelados por reposo/cambio de biblioteca no se adoptan.
+- Se ajustan primero hasta cinco destinos reales pendientes o del historial,
+  excluyendo medios en cuarentena, antes de calcular la próxima vuelta. Una caché
+  acotada de 32 escenas refinadas evita repetir ajustes tras saltos/retrocesos.
 - La preparación tiene un límite de 15 segundos, cancela realmente el worker y
   reintenta con espera creciente de 5–60 segundos. Un salto que necesita ajuste
   fino tiene un límite de 2 segundos; si el worker está ocupado/no disponible se
   usa la plantilla base, respetando el encuadre. No se fuerza el optimizador en
   el hilo de la interfaz.
-- Cerca del cambio (cinco segundos antes del temporizador o del final del video)
-  se intenta cargar/decodificar la siguiente escena usando el segundo escenario
-  existente. El actual sigue reproduciéndose. No hay tercer escenario ni tercer
-  decodificador de video. La precarga no se anuncia al watchdog como una transición.
+- Al estabilizarse una escena se empieza a cargar/decodificar la siguiente, sin
+  esperar al final del temporizador o video. El actual sigue reproduciéndose.
+  No hay tercer escenario ni tercer decodificador de video. Una vez lista, se
+  anticipan las fotos de la segunda siguiente, o el destino anterior del historial
+  tras un retroceso. Si incluye video, sólo se anticipa su póster: no se afirma que
+  esté listo para reproducirse. El presupuesto o un archivo no disponible pueden
+  dejar la reserva auxiliar incompleta; nunca se cambia el orden para ocultarlo.
+- Avanzar al mismo destino que se prepara reutiliza la operación, su DOM y su
+  deadline original. Repetir el toque no reinicia el timeout. Un destino distinto
+  invalida la operación anterior; sus callbacks no pueden confirmar la navegación.
+  Las fotos de reserva se revalidan en staging porque Chromium puede expulsar su
+  caché interna. La precarga en background no se anuncia al watchdog como transición.
+- Un fallo primario identifica/cuarentena el material y recompone o busca la
+  siguiente escena inmediatamente, sin esperar el temporizador. La reserva no
+  marca medios como vistos. Se mantiene la política de doble toque y de ignorar
+  órdenes durante el fundido para no reintroducir avances dobles.
 - Un plan listo no significa que sus archivos estén listos. Sólo el commit de una
   escena cargada, tras el crossfade, adopta la nueva vuelta y marca **todos** sus
   miembros como vistos. Cancelaciones, fallos y precargas no suman progreso.

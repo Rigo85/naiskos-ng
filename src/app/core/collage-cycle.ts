@@ -29,6 +29,8 @@ export class CollageCycle {
   private renewalDeferred = false;
   private restoreCheckpoint = true;
   private policyKey = '';
+  private reconciliation: { fingerprint: string; promise: Promise<Round | null> } | null = null;
+  private readonly fitted = new Map<string, MediaScene>();
 
   constructor(private readonly planner: CollagePlannerClient,
     private readonly trace: CycleTrace,
@@ -50,14 +52,33 @@ export class CollageCycle {
     return { ...scene, key: scene.key.split('#cycle:')[0] + `#cycle:${round.round}:${round.seed}` };
   }
 
-  private ensure(manifest: FrameManifest, aspect: number, initialSeed: number): Round {
+  private ensure(manifest: FrameManifest, aspect: number, initialSeed: number): Promise<Round | null> {
+    if (this.suspended) return Promise.resolve(null);
+    const fingerprint = planningFingerprint(manifest, aspect);
+    if (this.reconciliation?.fingerprint === fingerprint) return this.reconciliation.promise;
+    if (this.active?.fingerprint === fingerprint && !this.reconciliation) {
+      this.manifest = manifest;
+      return Promise.resolve(this.active);
+    }
+    const promise = this.reconcile(manifest, aspect, initialSeed);
+    const operation = { fingerprint, promise };
+    this.reconciliation = operation;
+    const clear = () => { if (this.reconciliation === operation) this.reconciliation = null; };
+    void promise.then(clear, clear);
+    return promise;
+  }
+
+  private async reconcile(manifest: FrameManifest, aspect: number, initialSeed: number): Promise<Round | null> {
     const policyKey = JSON.stringify([manifest.frameId, manifest.settings.collageMode, manifest.settings.order]);
     if (this.active && this.policyKey !== policyKey) this.reset();
     this.policyKey = policyKey;
     const fingerprint = planningFingerprint(manifest, aspect);
     this.manifest = manifest;
     this.aspect = aspect;
-    if (this.active?.fingerprint === fingerprint) return this.active;
+    if (this.active?.fingerprint === fingerprint) {
+      this.invalidate('library-or-layout-changed');
+      return this.active;
+    }
     this.invalidate('library-or-layout-changed');
     let round = this.active?.round ?? 1;
     let seed = this.active?.seed ?? initialSeed;
@@ -88,11 +109,22 @@ export class CollageCycle {
     const keys = new Set(manifest.media.map(identity));
     this.cohort = new Set([...this.cohort].filter((id) => ids.has(id)));
     this.seen = new Set([...this.seen].filter((key) => keys.has(key)));
-    const ordered = [...manifest.media];
-    if (varied && manifest.settings.order === 'shuffle') ordered.sort((a, b) =>
-      collageRank(a.id, seed) - collageRank(b.id, seed) || a.id.localeCompare(b.id));
-    const scenes = buildScenes(ordered, manifest.settings.collageMode, aspect, seed,
-      varied ? seed : undefined);
+    const generation = this.generation;
+    this.busy = true;
+    let scenes: MediaScene[];
+    try {
+      const result = await this.planner.run({ kind: 'plan', input: { media: planningMedia(manifest.media),
+        mode: manifest.settings.collageMode, order: manifest.settings.order,
+        fit: manifest.settings.defaultFitMode, aspect, seed, varied } }, 2_000);
+      this.validatePlan(result.scenes, manifest);
+      scenes = hydrateScenes(result.scenes, manifest.media);
+    } catch {
+      if (generation !== this.generation) return null;
+      // Linear singles are the bounded no-worker fallback, never a geometry search on UI.
+      scenes = buildScenes(manifest.media, 'off');
+      this.log('refinement-fallback', { reason: 'initial-layout-unavailable' });
+    } finally { if (generation === this.generation) this.busy = false; }
+    if (generation !== this.generation || this.suspended) return null;
     this.active = { round, seed, fingerprint, scenes, varied };
     this.active.scenes = scenes.map((s) => this.decorate(s, this.active!));
     this.history = []; this.historyIndex = -1;
@@ -105,19 +137,26 @@ export class CollageCycle {
     return this.manifest!.media.filter((item) => this.cohort.has(item.id) && !this.seen.has(identity(item)) && !unavailable(item)).length;
   }
 
-  candidates(manifest: FrameManifest, aspect: number, initialSeed: number, current: MediaScene | null,
-    direction: -1 | 1, preferred: string | undefined, unavailable: (item: MediaItem) => boolean): SceneCandidate[] {
-    let round = this.ensure(manifest, aspect, initialSeed);
+  async candidates(manifest: FrameManifest, aspect: number, initialSeed: number, current: MediaScene | null,
+    direction: -1 | 1, preferred: string | undefined, unavailable: (item: MediaItem) => boolean,
+    traceSelection = true): Promise<SceneCandidate[]> {
+    const ensured = await this.ensure(manifest, aspect, initialSeed);
+    if (!ensured || this.suspended) return [];
+    let round: Round = ensured;
     const from = Math.max(-1, round.scenes.findIndex((s) => s.cells.some((c) => c.item.id === current?.driver.id)));
-    if (preferred) this.log('manual-selection', { mediaIds: [preferred] });
+    if (preferred && traceSelection) this.log('manual-selection', { mediaIds: [preferred] });
     if (!preferred && this.history.length && (direction === -1 || this.historyIndex < this.history.length - 1)) {
+      const history: SceneCandidate[] = [];
+      const byId = new Map(manifest.media.map((m) => [m.id, m]));
       for (let h = this.historyIndex + direction; h >= 0 && h < this.history.length; h += direction) {
-        const byId = new Map(manifest.media.map((m) => [m.id, m]));
         const valid = omitSceneItems(this.history[h], (m) => byId.get(m.id)?.sha256 !== m.sha256 || unavailable(m));
         if (valid) {
-          this.log('history-selected', { historyIndex: h });
-          return [{ manifest, index: from < 0 ? 0 : from, item: valid.driver, scene: valid, historyIndex: h }];
+          history.push({ manifest, index: from < 0 ? 0 : from, item: valid.driver, scene: valid, historyIndex: h });
         }
+      }
+      if (history.length) {
+        if (traceSelection) this.log('history-selected', { historyIndex: history[0].historyIndex! });
+        return history;
       }
     }
     const renewal = direction === 1 && !preferred && this.seen.size > 0 && this.remaining(unavailable) === 0;
@@ -199,11 +238,25 @@ export class CollageCycle {
   }
 
   /** Called after a stable commit. Planning starts early, never at the boundary. */
-  async warm(current: MediaScene | null): Promise<void> {
+  async warm(current: MediaScene | null, unavailable: (item: MediaItem) => boolean = () => false): Promise<void> {
     if (!this.active || !this.manifest || this.suspended || this.busy || Date.now() < this.retryAt) return;
     const active = this.active, manifest = this.manifest, generation = this.generation;
     this.busy = true;
     try {
+      // Follow real pending/history candidates, not the physical index in the plan.
+      const nearby = (await this.candidates(manifest, this.aspect, active.seed, current, 1, undefined, unavailable, false))
+        .slice(0, 5).filter((c) => c.scene.cells.length > 1 && !c.scene.fitRefined && !this.fitted.has(c.scene.key));
+      if (generation !== this.generation) return;
+      if (nearby.length) {
+        const result = await this.planner.run({ kind: 'refine', fit: manifest.settings.defaultFitMode,
+          scenes: hydrateScenes(nearby.map((c) => c.scene), planningMedia(manifest.media)) });
+        if (generation !== this.generation) return;
+        if (result.scenes.length !== nearby.length) throw new Error('invalid-plan');
+        const scenes = hydrateScenes(result.scenes, manifest.media);
+        nearby.forEach((c, i) => this.cacheFit(c.scene.key, c.cycle
+          ? this.decorate(scenes[i], { ...active, ...c.cycle }) : scenes[i]));
+        this.log('lookahead-ready', { scenes: nearby.length, elapsedMs: Math.round(result.elapsedMs) });
+      }
       if (!this.next) {
         const seed = collageRank(String(active.round + 1), active.seed);
         this.log('plan-requested', { nextRound: active.round + 1, nextSeed: seed, materials: manifest.media.length,
@@ -212,29 +265,13 @@ export class CollageCycle {
           mode: manifest.settings.collageMode, order: manifest.settings.order,
           fit: manifest.settings.defaultFitMode, aspect: this.aspect, seed } });
         if (generation !== this.generation) return;
-        const keys = result.scenes.flatMap((s) => s.cells.map((c) => identity(c.item)));
-        const expected = new Set(manifest.media.map(identity));
-        if (keys.length !== manifest.media.length || new Set(keys).size !== keys.length ||
-          keys.some((key) => !expected.has(key))) throw new Error('invalid-plan');
+        this.validatePlan(result.scenes, manifest);
         const next: Round = { round: active.round + 1, seed, fingerprint: active.fingerprint, varied: true,
           scenes: hydrateScenes(result.scenes, manifest.media) };
         next.scenes = next.scenes.map((s) => this.decorate(s, next));
         this.next = next;
         this.log('plan-ready', { nextRound: next.round, nextSeed: seed, scenes: next.scenes.length,
           elapsedMs: Math.round(result.elapsedMs) });
-      }
-      const index = active.scenes.findIndex((s) => s.cells.some((c) => c.item.id === current?.driver.id));
-      const nearby = Array.from({ length: Math.min(5, active.scenes.length) }, (_, i) =>
-        (index + i + 1 + active.scenes.length) % active.scenes.length);
-      const missing = nearby.filter((i) => !active.scenes[i].fitRefined && active.scenes[i].cells.length > 1);
-      if (missing.length) {
-        const stripped = planningMedia(manifest.media);
-        const result = await this.planner.run({ kind: 'refine', fit: manifest.settings.defaultFitMode,
-          scenes: hydrateScenes(missing.map((i) => active.scenes[i]), stripped) });
-        if (generation !== this.generation) return;
-        const fitted = hydrateScenes(result.scenes, manifest.media);
-        missing.forEach((i, n) => active.scenes[i] = this.decorate(fitted[n], active));
-        this.log('lookahead-ready', { scenes: missing.length, elapsedMs: Math.round(result.elapsedMs) });
       }
       this.failures = 0;
     } catch (error) {
@@ -248,6 +285,8 @@ export class CollageCycle {
 
   async refine(candidate: SceneCandidate): Promise<SceneCandidate> {
     if (candidate.scene.fitRefined || candidate.scene.cells.length < 2) return candidate;
+    const cached = this.fitted.get(candidate.scene.key);
+    if (cached) return { ...candidate, scene: hydrateScenes([cached], candidate.manifest.media)[0] };
     // A manual jump may outrun lookahead. Keep playback working even if worker
     // is unavailable: the existing base layout is a safe, non-cropping fallback.
     if (this.busy || this.suspended || Date.now() < this.retryAt) {
@@ -262,6 +301,7 @@ export class CollageCycle {
       if (generation !== this.generation) return candidate;
       const scene = hydrateScenes(result.scenes, candidate.manifest.media)[0];
       if (candidate.cycle) scene.key = this.decorate(scene, { ...this.active!, ...candidate.cycle }).key;
+      this.cacheFit(candidate.scene.key, scene);
       return { ...candidate, scene };
     } catch { this.log('refinement-fallback', { reason: 'worker-unavailable' }); return candidate; }
     finally { if (generation === this.generation) this.busy = false; }
@@ -271,6 +311,8 @@ export class CollageCycle {
     if (this.busy || this.next) this.log('plan-cancelled', { reason });
     this.generation++; this.busy = false;
     this.planner.cancel(); this.next = null;
+    this.fitted.clear();
+    this.reconciliation = null;
   }
 
   suspend(): void {
@@ -282,9 +324,21 @@ export class CollageCycle {
   }
   resume(): void { this.suspended = false; this.log('planning-resumed'); }
   reset(): void {
-    if (!this.active) return;
+    if (!this.active && !this.reconciliation && !this.busy) return;
     this.invalidate('mode-or-order-changed'); this.active = null;
     this.cohort.clear(); this.seen.clear(); this.history = []; this.historyIndex = -1;
   }
   destroy(): void { this.suspended = true; this.invalidate('viewer-destroyed'); }
+
+  private validatePlan(scenes: MediaScene[], manifest: FrameManifest): void {
+    const keys = scenes.flatMap((s) => s.cells.map((c) => identity(c.item)));
+    const expected = new Set(manifest.media.map(identity));
+    if (keys.length !== manifest.media.length || new Set(keys).size !== keys.length ||
+      keys.some((key) => !expected.has(key))) throw new Error('invalid-plan');
+  }
+
+  private cacheFit(key: string, scene: MediaScene): void {
+    this.fitted.set(key, scene);
+    if (this.fitted.size > 32) this.fitted.delete(this.fitted.keys().next().value!);
+  }
 }

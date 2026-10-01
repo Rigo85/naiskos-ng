@@ -6,6 +6,7 @@ import { App } from './app';
 import { AgentApi } from './core/agent-api';
 import { CollagePlannerClient } from './core/collage-planner-client';
 import { executePlannerJob } from './core/collage-planner';
+import { PhotoReserve } from './core/photo-reserve';
 import {
   DEFAULT_FRAME_SETTINGS,
   FrameManifest,
@@ -341,6 +342,132 @@ describe('App', () => {
         url: `/dynamic/${i}.jpg`, width: 670, height: 1000 })) };
   }
 
+  it('precarga inmediatamente y un toque durante decode reutiliza DOM y preparación', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
+    const node = fixture.nativeElement.querySelector('.stage--staging img');
+    const operation = c.collagePreload;
+    expect(node).toBeTruthy(); expect(operation.ready).toBe(false);
+    const visible = c.currentScene().key;
+    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(1);
+    const generation = c.navigationGeneration;
+    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(1);
+    expect(c.navigationGeneration).toBe(generation);
+    expect(c.collagePreload).toBe(operation);
+    fixture.detectChanges(); expect(fixture.nativeElement.querySelector('.stage--staging img')).toBe(node);
+    await makeStagedSceneReady(fixture);
+    expect(fixture.nativeElement.querySelector('.stage--incoming img')).toBe(node);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.currentScene().key).not.toBe(visible);
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'preload-joined')).toBe(true);
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'navigation-visible')).toBe(true);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('recompone una precarga fallida inmediatamente sin esperar los 30 segundos', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any, visible = c.currentScene().key;
+    await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
+    const failed = c.collagePreload.target.scene.cells[0].item.id;
+    fixture.nativeElement.querySelector('.stage--staging img').dispatchEvent(new Event('error'));
+    await vi.advanceTimersByTimeAsync(10); fixture.detectChanges();
+    expect(c.currentScene().key).toBe(visible);
+    expect(c.collagePreload.target.scene.cells.every((cell: any) => cell.item.id !== failed)).toBe(true);
+    await makeStagedSceneReady(fixture); expect(c.collagePreload.ready).toBe(true);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('reposo cancela una precarga que esperaba el usuario sin avance ni commit tardío', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any, visible = c.currentScene().key;
+    await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
+    const stale = fixture.nativeElement.querySelector('.stage--staging img');
+    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(1);
+    c.applyReposeState({ ...awakeRepose, active: true, updatedAt: '2026-10-01T23:00:00Z' });
+    stale.dispatchEvent(new Event('load')); await vi.advanceTimersByTimeAsync(10_000);
+    expect(c.currentScene().key).toBe(visible); expect(c.crossfade()).toBeNull();
+    expect(c.collagePreload).toBeNull();
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('volumen y texto conservan la precarga y se mantienen al usarla', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    await vi.advanceTimersByTimeAsync(1); await makeStagedSceneReady(fixture);
+    const preload = c.collagePreload;
+    c.replaceSettings({ ...c.settings(), volume: .17, showCaption: false });
+    expect(c.collagePreload).toBe(preload);
+    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    expect(c.settings().volume).toBe(.17); expect(c.settings().showCaption).toBe(false);
+    expect(reportCollageEventMock.mock.calls.some(([e]: any[]) => e.action === 'preload-used')).toBe(true);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('un toque repetido no renueva el timeout original de la preparación', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
+    const target = c.collagePreload.target.scene.cells[0].item.id;
+    await vi.advanceTimersByTimeAsync(4000);
+    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(500);
+    c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(600);
+    expect(reportMediaPreparationFailureMock.mock.calls.some(([event]: any[]) => event.mediaId === target)).toBe(true);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('mantiene una reserva auxiliar adelantada y prioriza el historial al retroceder', async () => {
+    vi.useFakeTimers(); servedManifest = dynamicManifest();
+    const prepare = vi.spyOn(PhotoReserve.prototype, 'prepare').mockResolvedValue('ready');
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    for (let i = 0; i < 3; i++) {
+      await vi.advanceTimersByTimeAsync(1); await makeStagedSceneReady(fixture);
+      const auxiliary = prepare.mock.calls.at(-1)![0];
+      const currentIds = c.currentScene().cells.map((cell: any) => cell.item.id);
+      const nextIds = c.collagePreload.target.scene.cells.map((cell: any) => cell.item.id);
+      expect(auxiliary.every((m) => !currentIds.includes(m.id) && !nextIds.includes(m.id))).toBe(true);
+      c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    }
+    c.navigate(-1, undefined, true); await makeStagedSceneReady(fixture);
+    await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(1); await makeStagedSceneReady(fixture);
+    expect(c.reserveDirection).toBe(-1);
+    expect(c.crossfade()).toBeNull();
+    expect(c.collagePreload?.ready).toBe(true);
+    const previous = (await c.navigationCandidates(-1))[0].scene.cells.map((cell: any) => cell.item.id);
+    expect(prepare.mock.calls.at(-1)![0].map((m) => m.id)).toEqual(previous);
+    fixture.destroy(); vi.useRealTimers();
+  });
+
+  it('videos consecutivos nunca añaden un tercer reproductor en precarga o fundido', async () => {
+    vi.useFakeTimers(); servedManifest = { ...dynamicManifest(), media: Array.from({ length: 4 }, (_, i) =>
+      ({ ...video, id: `video-${i}`, sha256: `hash-${i}`, url: `/v/${i}`, posterUrl: `/p/${i}`,
+        width: 670, height: 1000 })) };
+    const fixture = TestBed.createComponent(App); fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0); await makeStagedSceneReady(fixture);
+    const c = fixture.componentInstance as any;
+    for (let i = 0; i < 4; i++) {
+      await vi.advanceTimersByTimeAsync(1); await makeStagedSceneReady(fixture);
+      expect(fixture.nativeElement.querySelectorAll('video').length).toBeLessThanOrEqual(2);
+      c.navigate(1, undefined, true); await vi.advanceTimersByTimeAsync(1); fixture.detectChanges();
+      expect(fixture.nativeElement.querySelectorAll('video').length).toBeLessThanOrEqual(2);
+      await vi.advanceTimersByTimeAsync(450); fixture.detectChanges();
+    }
+    fixture.destroy(); vi.useRealTimers();
+  });
+
   it('prepara y precarga antes del cambio sin detener el reloj ni marcar la vuelta como adoptada', async () => {
     vi.useFakeTimers(); servedManifest = dynamicManifest();
     const fixture = TestBed.createComponent(App); fixture.detectChanges();
@@ -537,10 +664,11 @@ describe('App', () => {
     expect(compiled.querySelectorAll('.stage--stable img')).toHaveLength(2);
     expect(compiled.querySelector('.metadata')).toBeNull();
     expect(compiled.querySelector('.collage-menu')).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    await makeStagedSceneReady(fixture);
     await vi.advanceTimersByTimeAsync(30_000);
     fixture.detectChanges();
-    expect(compiled.querySelectorAll('.stage--staging img')).toHaveLength(2);
-    await makeStagedSceneReady(fixture);
+    expect(compiled.querySelectorAll('.stage--incoming img')).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(450);
     fixture.detectChanges();
     expect(compiled.querySelector('.stage--stable img')?.getAttribute('src')).toBe(thirdPhoto.url);
@@ -584,7 +712,8 @@ describe('App', () => {
     element.dispatchEvent(new Event('playing'));
     await vi.advanceTimersByTimeAsync(3100);
     fixture.detectChanges();
-    expect(compiled.querySelector('.stage--staging')).toBeNull();
+    expect(component.currentMedia().id).toBe(video.id);
+    expect(component.preparingTransition()).toBe(false);
     const key = component.currentScene().key;
     component.applyReposeState({ ...awakeRepose, active: true, updatedAt: '2026-09-17T12:00:00Z' });
     element.dispatchEvent(new Event('pause'));
@@ -691,6 +820,8 @@ describe('App', () => {
     await vi.advanceTimersByTimeAsync(0);
     await makeStagedSceneReady(fixture);
     const component = fixture.componentInstance as any;
+    await vi.advanceTimersByTimeAsync(1);
+    await makeStagedSceneReady(fixture);
     await vi.advanceTimersByTimeAsync(30_000);
     fixture.detectChanges();
     const generation = component.navigationGeneration;

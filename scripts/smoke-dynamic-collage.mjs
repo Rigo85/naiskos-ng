@@ -27,7 +27,7 @@ manifest.media[5] = { ...manifest.media[5], kind: 'video', url: '/sample/test.mp
   posterUrl: '/sample/5.svg', durationSeconds: 1, sizeBytes: video.length };
 const repose = { schemaVersion: 1, active: false, source: null, enteredAt: null,
   updatedAt: new Date().toISOString(), overrideUntil: null, schedule: { from: '23:30', until: '07:00' } };
-let brokenImage = false, chrome, ws;
+let brokenImage = false, chrome, ws, slowPhotosMs = 0;
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://localhost').pathname;
@@ -65,6 +65,7 @@ const server = createServer(async (req, res) => {
     }
     if (url.startsWith('/sample/')) {
       if (brokenImage && url === '/sample/broken-17.svg') { res.writeHead(404); res.end(); return; }
+      if (slowPhotosMs) await delay(slowPhotosMs);
       res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' });
       res.end('<svg xmlns="http://www.w3.org/2000/svg" width="670" height="1000"><rect width="670" height="1000" fill="#507f9c"/></svg>'); return;
     }
@@ -125,6 +126,27 @@ try {
   assert(events.some((e) => e.action === 'preload-used'));
   assert(events.filter((e) => e.action === 'round-adopted').every((e) => !e.details.fallback));
   assert.equal(errors.length, 0);
+  // Real delayed downloads: 30s photos must preload immediately, and a manual
+  // advance while decode/download is pending must join rather than restart.
+  const regularMedia = [...manifest.media];
+  slowPhotosMs = 700;
+  manifest.settings.photoDurationSeconds = 30;
+  manifest.media = regularMedia.map((m, i) => ({ ...m, kind: 'photo',
+    sha256: `slow-${i}`, url: `/sample/slow-${i}.svg`, posterUrl: null }));
+  manifest.version++;
+  const slowVersion = manifest.version;
+  await waitFor(() => events.some((e) => e.action === 'scene-committed' && e.details.manifestVersion === slowVersion));
+  await waitFor(() => evaluate(`!!document.querySelector('.stage--stable') && !!document.querySelector('.stage--staging')`));
+  const beforeManual = events.filter((e) => e.action === 'scene-committed').length;
+  await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 1000, y: 350, button: 'left', clickCount: 1 });
+  await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 1000, y: 350, button: 'left', clickCount: 1 });
+  await waitFor(() => events.some((e) => e.action === 'preload-joined'), 5_000);
+  await waitFor(() => events.filter((e) => e.action === 'scene-committed').length > beforeManual, 5_000);
+  assert(events.some((e) => e.action === 'navigation-visible' && e.details.elapsedMs < 3_000));
+  await waitFor(() => events.some((e) => e.action === 'reserve-ready' && e.details.reason === 'ready'), 5_000);
+  slowPhotosMs = 0; manifest.media = regularMedia; manifest.settings.photoDurationSeconds = 1; manifest.version++;
+  // Existing 30s scene keeps its timer until the new manifest commits.
+  await waitFor(() => events.some((e) => e.action === 'scene-committed' && e.details.manifestVersion === manifest.version), 45_000);
   // Repose preserves the scene/round, while polling and the clock continue.
   repose.active = true; repose.source = 'manual'; repose.updatedAt = new Date().toISOString();
   await waitFor(() => events.some((e) => e.action === 'planning-suspended'));
@@ -159,7 +181,13 @@ try {
   assert.equal(playbackErrors.length, 0, JSON.stringify(playbackErrors));
   console.log(JSON.stringify({ ok: true, rounds: events.filter((e) => e.action === 'round-adopted').length,
     precacheHits: events.filter((e) => e.action === 'preload-used').length, recoveredMediaFailures: errors.length,
+    joinedPreloads: events.filter((e) => e.action === 'preload-joined').length,
+    auxiliaryReady: events.filter((e) => e.action === 'reserve-ready' && e.details.reason === 'ready').length,
+    manualLatenciesMs: events.filter((e) => e.action === 'navigation-visible').map((e) => e.details.elapsedMs),
     heartbeatCount: beats.length, videoRecoveries: playbackErrors.length, benchmark }, null, 2));
+} catch (error) {
+  console.error(JSON.stringify({ lastEvents: events.slice(-20), errors, playbackErrors }));
+  throw error;
 } finally {
   ws?.close();
   if (chrome && chrome.exitCode === null) {

@@ -8,6 +8,8 @@ export interface PlanInput {
   fit: FrameManifest['settings']['defaultFitMode'];
   aspect: number;
   seed: number;
+  /** Initial/checkpoint reconciliation must preserve its original grouping. */
+  varied?: boolean;
 }
 export type PlannerJob = { kind: 'plan'; input: PlanInput } |
   { kind: 'refine'; scenes: MediaScene[]; fit: PlanInput['fit'] };
@@ -25,9 +27,9 @@ export function executePlannerJob(job: PlannerJob): MediaScene[] {
   if (job.kind === 'refine') return job.scenes.map((scene) => refineScene(scene, job.fit));
   const { input } = job;
   const media = [...input.media];
-  if (input.order === 'shuffle') media.sort((a, b) => collageRank(a.id, input.seed) -
+  if (input.varied !== false && input.order === 'shuffle') media.sort((a, b) => collageRank(a.id, input.seed) -
     collageRank(b.id, input.seed) || a.id.localeCompare(b.id));
-  const scenes = buildScenes(media, input.mode, input.aspect, input.seed, input.seed);
+  const scenes = buildScenes(media, input.mode, input.aspect, input.seed, input.varied === false ? undefined : input.seed);
   // Geometry first; prepare a short head, not every crop in a large library.
   return scenes.map((scene, i) => i < 5 ? refineScene(scene, input.fit) : scene);
 }

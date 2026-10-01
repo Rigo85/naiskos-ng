@@ -37,7 +37,9 @@ sistema lista para instalar ni como un producto comercial.
 
 - Presentación automática de fotografías y reproducción completa de videos.
 - [Mosaicos dinámicos](docs/collage.md) en columnas o adaptables, con mezcla
-  anticipada por vuelta, un video como máximo por escena y trazas de funcionamiento.
+  anticipada por vuelta, precarga temprana, reserva auxiliar acotada y reutilización
+  de cargas durante navegación manual. Un video como máximo por escena y trazas
+  de funcionamiento.
 - Crossfade y encuadre global o individual con `contain`, `cover` e `inherit`.
 - Navegación táctil por tap, doble tap, arrastre y deslizamiento horizontal.
 - Zoom fotográfico volátil de 1× a 4× mediante pellizco y desplazamiento.

@@ -3255,6 +3255,7 @@ export class App implements OnDestroy {
         (this.reposeActive() || (this.manifest() !== null && !this.loading() &&
           (document.querySelector('.stage--stable, .stage--incoming') !== null || this.manifest()?.media.length === 0))),
       mediaId: media?.id ?? null,
+      mediaSha256: media?.sha256 ?? null,
       mediaKind: media?.kind ?? null,
       state: this.reposeActive()
         ? 'repose'
